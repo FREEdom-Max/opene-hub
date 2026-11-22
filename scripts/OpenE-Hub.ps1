@@ -1,11 +1,12 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
-param([ValidateSet('Window','Status','Quiet','Daily','Performance','Restore')][string]$Action = 'Window')
+param([ValidateSet('Window','Status','Quiet','Daily','Performance','Restore')][string]$Action = 'Window',
+      [switch]$PolicyOnly)
 $ErrorActionPreference = 'Stop'
 
 # Test-MateBookE checks the model before loading vendor code.
 $probe = Join-Path $PSScriptRoot 'Test-MateBookE.ps1'
-$sample = & $probe
+$sample = & $probe -ModelOnly:$PolicyOnly
 if (-not ('OpenE.BatteryPolicy' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;

@@ -1037,6 +1037,18 @@
                         <StackPanel Grid.Row="0" Grid.Column="0" Spacing="20">
                             <StackPanel Spacing="4">
                                 <TextBlock Text="节能与性能" Style="{StaticResource SettingsGroupHeaderStyle}" />
+                                <Border x:Name="BatteryProfileCard" Visibility="Collapsed" Style="{StaticResource SettingsCompoundCardStyle}">
+                                    <StackPanel Spacing="8" Margin="16,12">
+                                        <TextBlock Text="电池供电档位" />
+                                        <TextBlock x:Name="BatteryProfileStatus" Style="{StaticResource SettingsDescriptionStyle}" />
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <Button Content="静音" Tag="Quiet" Click="BatteryProfileClicked" />
+                                            <Button Content="日常" Tag="Daily" Click="BatteryProfileClicked" />
+                                            <Button Content="性能" Tag="Performance" Click="BatteryProfileClicked" />
+                                        </StackPanel>
+                                        <Button Content="恢复此前的电池设置" Tag="Restore" Click="BatteryProfileClicked" />
+                                    </StackPanel>
+                                </Border>
                                 <Border Style="{StaticResource SettingsCompoundCardStyle}">
                                     <StackPanel>
                                         <Border Style="{StaticResource SettingsCompoundRowStyle}">

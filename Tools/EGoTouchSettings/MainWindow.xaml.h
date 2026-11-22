@@ -63,6 +63,7 @@ struct MainWindow : MainWindowT<MainWindow> {
         IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void PowerModeSelectionChanged(
         IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
+    winrt::fire_and_forget BatteryProfileClicked(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void EnergySaverToggled(
         IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void EnergySaverThresholdSelectionChanged(
@@ -102,6 +103,7 @@ private:
     void SyncVendorServicesDetailsVisibility();
     void RefreshVendorServicesDetails();
     bool m_closed = false;
+    bool m_profilePending = false;
     bool m_mainUiInitialized = false;
     bool m_mainUiNeedsRender = true;
     bool m_mainUiVisible = false;

@@ -1,0 +1,28 @@
+name: MateBook E x64 settings
+on:
+  push:
+    branches: [opene-hub]
+    paths:
+      - 'Tools/EGoTouchSettings/**'
+      - 'Common/**'
+      - 'hal/**'
+      - 'scripts/*-*.ps1'
+      - '.github/workflows/settings-x64.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  settings:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build original WinUI settings for x64
+        shell: powershell
+        run: .\scripts\build-settings-x64.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opene-hub-settings-x64
+          path: |
+            build/settings-x64/**
+            !build/settings-x64/**/*.pdb
+          if-no-files-found: error

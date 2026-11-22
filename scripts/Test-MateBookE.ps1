@@ -1,6 +1,7 @@
 # Run in 64-bit Windows PowerShell 5.1. All hardware operations are queries.
 # The WmiUtil entry points are documented in hal/docs/hardware-hal.md.
 #Requires -Version 5.1
+param([switch]$ModelOnly)
 $ErrorActionPreference = 'Stop'
 if (-not [Environment]::Is64BitProcess) { throw 'Use 64-bit Windows PowerShell.' }
 
@@ -9,6 +10,7 @@ if ($bios.SystemManufacturer -ne 'HUAWEI' -or $bios.SystemProductName -ne 'DRR-W
     throw "This probe targets HUAWEI DRR-WXX. Detected $($bios.SystemProductName)."
 }
 
+if ($ModelOnly) { return }
 $battery = [Windows.Devices.Power.Battery,Windows.Devices.Power,ContentType=WindowsRuntime]::AggregateBattery.GetReport()
 $summary = [ordered]@{
     Model = $bios.SystemProductName

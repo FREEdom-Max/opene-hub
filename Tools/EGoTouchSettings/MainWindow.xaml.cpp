@@ -20,6 +20,7 @@
 #include <cmath>
 #include <dwmapi.h>
 #include <optional>
+#include <filesystem>
 #include <shellapi.h>
 
 #if __has_include("MainWindow.g.cpp")
@@ -1097,6 +1098,12 @@ void MainWindow::ShowAboutVersion() {
 // 即便改了也要重开窗口才谈得上刷新，为此每次切页重读固件不值得。
 void MainWindow::FillDevicePage() {
     const DeviceInfo::Info info = DeviceInfo::Query();
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (_wcsicmp(info.manufacturer.c_str(), L"HUAWEI") == 0 &&
+        _wcsicmp(info.productName.c_str(), L"DRR-WXX") == 0) {
+        BatteryProfileCard().Visibility(Visibility::Visible);
+    }
+#endif
 
     // 标题用「厂商 + 营销名」，型号码退到副标题：GK-W7X 这种码要对着机器背面才认得出来，
     // 而 MateBook E 是固件自己写下的（SMBIOS 类型 1 的 Family），不是我们认定的。
@@ -1606,10 +1613,74 @@ void MainWindow::RefreshScreenControls() {
     RefreshHomeScreenSummary();
 }
 
+fire_and_forget MainWindow::BatteryProfileClicked(IInspectable const& sender, RoutedEventArgs const&) {
+    if (!m_uiReady || m_profilePending || BatteryProfileCard().Visibility() != Visibility::Visible) co_return;
+    const auto action = unbox_value<hstring>(sender.as<Button>().Tag());
+    if (action != L"Quiet" && action != L"Daily" && action != L"Performance" && action != L"Restore") co_return;
+    auto lifetime = get_strong();
+    apartment_context ui;
+    m_profilePending = true;
+    BatteryProfileCard().IsEnabled(false);
+    BatteryProfileStatus().Text(L"正在应用电池设置…");
+    bool applied = false;
+    try {
+        wchar_t module[32768]{}, system[MAX_PATH]{};
+        const auto size = GetModuleFileNameW(nullptr, module, static_cast<DWORD>(std::size(module)));
+        const auto systemSize = GetSystemDirectoryW(system, MAX_PATH);
+        if (size && size < std::size(module) && systemSize && systemSize < MAX_PATH) {
+            const auto script = std::filesystem::path(module).parent_path() / L"scripts" / L"OpenE-Hub.ps1";
+            const auto shell = std::filesystem::path(system) / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
+            auto command = L"\"" + shell.wstring() +
+                L"\" -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File \"" +
+                script.wstring() + L"\" -PolicyOnly -Action " + action.c_str();
+            STARTUPINFOW startup{sizeof(STARTUPINFOW)};
+            PROCESS_INFORMATION process{};
+            if (CreateProcessW(shell.c_str(), command.data(), nullptr, nullptr, FALSE,
+                               CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+                CloseHandle(process.hThread);
+                winrt::handle worker{process.hProcess};
+                co_await winrt::resume_on_signal(worker.get());
+                DWORD exitCode{};
+                applied = GetExitCodeProcess(worker.get(), &exitCode) && exitCode == 0;
+            }
+        }
+    } catch (...) { applied = false; }
+    co_await ui;
+    m_profilePending = false;
+    if (m_closed) co_return;
+    BatteryProfileCard().IsEnabled(true);
+    RefreshPowerModeControl();
+    if (!applied) ShowError(L"电池设置未完成", L"请检查程序目录中的 scripts 文件夹；若在其他位置更改过电源设置，可先点击恢复。");
+}
+
 void MainWindow::RefreshPowerModeControl() {
     if (!m_mainUiInitialized) return;
     const auto es = PowerOverlay::QueryEnergySaver();
     const auto overlay = PowerOverlay::Query();
+    if (!m_profilePending && BatteryProfileCard().Visibility() == Visibility::Visible) {
+        const auto& api = PowerOverlay::detail::Api::Instance();
+        constexpr GUID processor{0x54533251,0x82be,0x4824,{0x96,0xc1,0x47,0xb6,0x0b,0x74,0x0d,0x00}};
+        constexpr GUID boost{0xbe337238,0x0d82,0x4146,{0xa9,0x60,0x4f,0x37,0x49,0xd4,0x70,0xc7}};
+        GUID* scheme = nullptr;
+        GUID mode{};
+        DWORD index{};
+        const wchar_t* status = L"无法读取当前电池档位";
+        if (api.getActiveScheme && api.getActiveScheme(nullptr, &scheme) == ERROR_SUCCESS && scheme) {
+            if (api.readDcValue && api.getUserDc &&
+                api.readDcValue(nullptr, scheme, &processor, &boost, &index) == ERROR_SUCCESS &&
+                api.getUserDc(&mode) == ERROR_SUCCESS) {
+                status = L"当前为自定义电池设置";
+                if (IsEqualGUID(mode, PowerOverlay::detail::kBestEfficiencyGuid)) {
+                    if (index == 0) status = L"当前为静音 · 关闭睿频";
+                    if (index == 1) status = L"当前为日常 · 优先能效，允许睿频";
+                } else if (index == 2 && IsEqualGUID(mode, PowerOverlay::detail::kBestPerformanceGuid)) {
+                    status = L"当前为性能 · 优先性能，允许睿频";
+                }
+            }
+            LocalFree(scheme);
+        }
+        BatteryProfileStatus().Text(status);
+    }
     const bool wasUpdating = m_updatingControls;
     m_updatingControls = true;
 
