@@ -5,6 +5,7 @@
 #include "AccessoryBatteryState.h"
 #include "AppIconResource.h"
 #include "DeviceInfo.h"
+#include "MateBookServices.h"
 #include "DisplayModeHelper.h"
 #include "AppVersion.h"
 #include "LogExport.h"
@@ -36,6 +37,24 @@ using namespace Microsoft::UI::Xaml::Media::Animation;
 namespace winrt::EGoTouchSettings::implementation {
 
 namespace {
+
+std::filesystem::path ApplicationDirectory() {
+    wchar_t module[32768]{};
+    const auto size = GetModuleFileNameW(nullptr, module, static_cast<DWORD>(std::size(module)));
+    if (!size || size >= std::size(module)) throw winrt::hresult_error(E_FAIL);
+    return std::filesystem::path(module).parent_path();
+}
+
+bool HasServiceBackup() {
+    HKEY key{};
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, MateBookServices::backupKey, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+        return false;
+    DWORD count{};
+    const auto result = RegQueryInfoKeyW(key, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                         &count, nullptr, nullptr, nullptr, nullptr);
+    RegCloseKey(key);
+    return result == ERROR_SUCCESS && count > 0;
+}
 
 constexpr wchar_t kSettingsRegistryKey[] = L"Software\\OpenEGoHub";
 // 设备页空状态的两个图标。写成码位而不是字面字符：Segoe Fluent 的这两个字形落在私用区，
@@ -281,6 +300,7 @@ std::optional<std::wstring> PickSaveLocation(HWND owner, std::wstring const& sug
 MainWindow::MainWindow() {
     InitializeComponent();
 
+    Title(L"openehub");
     ExtendsContentIntoTitleBar(true);
     SetTitleBar(AppTitleBar());
 
@@ -761,7 +781,7 @@ void MainWindow::ActivateWindow() {
 
 QuickFlyoutState MainWindow::BuildQuickFlyoutState() {
     QuickFlyoutState s{};
-    m_trayConnected = FindTrayWindow() != nullptr;
+    m_trayConnected = !m_matebookE && FindTrayWindow() != nullptr;
     s.trayConnected = m_trayConnected;
 
     if (!m_reader.IsOpen()) m_reader.Open();
@@ -1101,7 +1121,17 @@ void MainWindow::FillDevicePage() {
 #if defined(_M_X64) && !defined(_M_ARM64EC)
     if (_wcsicmp(info.manufacturer.c_str(), L"HUAWEI") == 0 &&
         _wcsicmp(info.productName.c_str(), L"DRR-WXX") == 0) {
+        m_matebookE = true;
         BatteryProfileCard().Visibility(Visibility::Visible);
+        NaturalColorRow().Visibility(Visibility::Visible);
+        HomeTouchRow().Visibility(Visibility::Collapsed);
+        TouchServiceRow().Visibility(Visibility::Collapsed);
+        TrayStartupGroup().Visibility(Visibility::Collapsed);
+        HomePenModeRow().Visibility(Visibility::Collapsed);
+        PenModeRow().Visibility(Visibility::Collapsed);
+        OneNoteCompatibilityRow().Visibility(Visibility::Collapsed);
+        WindowsPenRow().Visibility(Visibility::Visible);
+        StartAccessories();
     }
 #endif
 
@@ -1501,7 +1531,7 @@ void MainWindow::NavSelectionChanged(
         if (tag == L"screen") RefreshScreenControls();
         else if (tag == L"battery") RefreshPowerModeControl();
         else if (tag == L"general") {
-            if (!m_vendorScmProbed || m_vendorDetailsExpanded) {
+            if (m_matebookE || !m_vendorScmProbed || m_vendorDetailsExpanded) {
                 RefreshVendorServicesDetails();
                 SyncVendorServicesDetailsVisibility();
             }
@@ -1571,8 +1601,50 @@ void MainWindow::SyncFrameTheme() {
         Microsoft::UI::Windowing::AppWindow::GetFromWindowId(GetWindowIdFromWindow(hwnd)), dark);
 }
 
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+fire_and_forget MainWindow::StartAccessories() {
+    auto lifetime = get_strong();
+    apartment_context ui;
+    std::unique_ptr<MateBookAccessories> accessories;
+    try {
+        co_await resume_background();
+        accessories = std::make_unique<MateBookAccessories>();
+        accessories->Start(ApplicationDirectory());
+    } catch (...) { accessories.reset(); }
+    co_await ui;
+    if (m_closed) co_return;
+    m_accessories = std::move(accessories);
+    m_mainUiNeedsRender = true;
+    RefreshState();
+}
+#endif
+
+void MainWindow::WindowsPenClicked(IInspectable const&, RoutedEventArgs const&) {
+    ShellExecuteW(WindowHandle(), L"open", L"ms-settings:pen", nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void MainWindow::RefreshNaturalColor() {
+    if (!m_matebookE) return;
+    const auto value = m_naturalColor.Read();
+    const bool available = value == 0 || value == 1;
+    const bool previous = m_updatingControls;
+    m_updatingControls = true;
+    NaturalColorToggle().IsEnabled(available);
+    NaturalColorToggle().IsOn(value == 1);
+    NaturalColorStatus().Text(available ? L"根据环境光线自动调节内置屏幕的色彩。" : L"无法读取华为显示管理组件的自然色彩状态。");
+    m_updatingControls = previous;
+}
+
+void MainWindow::NaturalColorToggled(IInspectable const&, RoutedEventArgs const&) {
+    if (!m_uiReady || m_updatingControls || !m_matebookE) return;
+    const bool ok = m_naturalColor.Set(NaturalColorToggle().IsOn());
+    RefreshNaturalColor();
+    if (!ok) ShowError(L"自然色彩设置未完成", L"请检查华为显示管理服务是否正在运行。");
+}
+
 void MainWindow::RefreshScreenControls() {
     if (!m_mainUiInitialized) return;
+    RefreshNaturalColor();
     const auto mode = DisplayModeHelper::QueryPrimary();
     m_supportedRefreshRates = mode.supportedHz;
     m_currentRefreshHz = mode.currentHz;
@@ -1615,7 +1687,7 @@ void MainWindow::RefreshScreenControls() {
 
 fire_and_forget MainWindow::BatteryProfileClicked(IInspectable const& sender, RoutedEventArgs const&) {
     if (!m_uiReady || m_profilePending || BatteryProfileCard().Visibility() != Visibility::Visible) co_return;
-    const auto action = unbox_value<hstring>(sender.as<Button>().Tag());
+    const auto action = unbox_value<hstring>(sender.as<FrameworkElement>().Tag());
     if (action != L"Quiet" && action != L"Daily" && action != L"Performance" && action != L"Restore") co_return;
     auto lifetime = get_strong();
     apartment_context ui;
@@ -1664,21 +1736,24 @@ void MainWindow::RefreshPowerModeControl() {
         GUID* scheme = nullptr;
         GUID mode{};
         DWORD index{};
+        const wchar_t* label = L"选择档位";
         const wchar_t* status = L"无法读取当前电池档位";
         if (api.getActiveScheme && api.getActiveScheme(nullptr, &scheme) == ERROR_SUCCESS && scheme) {
             if (api.readDcValue && api.getUserDc &&
                 api.readDcValue(nullptr, scheme, &processor, &boost, &index) == ERROR_SUCCESS &&
                 api.getUserDc(&mode) == ERROR_SUCCESS) {
-                status = L"当前为自定义电池设置";
+                label = L"自定义";
+                status = L"当前电源设置与三个预设档位不同。";
                 if (IsEqualGUID(mode, PowerOverlay::detail::kBestEfficiencyGuid)) {
-                    if (index == 0) status = L"当前为静音 · 关闭睿频";
-                    if (index == 1) status = L"当前为日常 · 优先能效，允许睿频";
+                    if (index == 0) { label = L"静音"; status = L"使用电池时关闭睿频，优先降低功耗。"; }
+                    if (index == 1) { label = L"日常"; status = L"使用电池时优先能效，保留睿频。"; }
                 } else if (index == 2 && IsEqualGUID(mode, PowerOverlay::detail::kBestPerformanceGuid)) {
-                    status = L"当前为性能 · 优先性能，允许睿频";
+                    label = L"性能"; status = L"使用电池时优先性能，允许积极睿频。";
                 }
             }
             LocalFree(scheme);
         }
+        ProfileMenu().Content(box_value(hstring{label}));
         BatteryProfileStatus().Text(status);
     }
     const bool wasUpdating = m_updatingControls;
@@ -1823,7 +1898,14 @@ void MainWindow::VendorServicesDetailsToggleClicked(IInspectable const&, RoutedE
 
 void MainWindow::RefreshVendorServicesDetails() {
     const SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-    if (!scm) return;
+    if (!scm) {
+        if (m_matebookE) {
+            VendorServicesStatusText().Text(L"无法访问 Windows 服务管理器。");
+            VendorServicesToggle().IsEnabled(false);
+            m_lastVendorDetailsQueryTick = GetTickCount64();
+        }
+        return;
+    }
 
     struct ServiceRowBinding {
         const wchar_t* name;
@@ -1843,7 +1925,12 @@ void MainWindow::RefreshVendorServicesDetails() {
     std::vector<BYTE> configBuf;
     size_t installedCount = 0;
 
+    size_t runningCount = 0;
     for (const auto& item : rows) {
+        if (m_matebookE && wcscmp(item.name, L"LCD_Service") == 0) {
+            item.row.Visibility(Visibility::Collapsed);
+            continue;
+        }
         bool canQueryConfig = true;
         SC_HANDLE svc = OpenServiceW(scm, item.name, SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG);
         if (!svc && GetLastError() == ERROR_ACCESS_DENIED) {
@@ -1868,6 +1955,7 @@ void MainWindow::RefreshVendorServicesDetails() {
         SERVICE_STATUS ss{};
         const bool hasStatus = QueryServiceStatus(svc, &ss) != FALSE;
 
+        if (hasStatus && ss.dwCurrentState == SERVICE_RUNNING) ++runningCount;
         DWORD startType = SERVICE_DEMAND_START;
         bool hasStart = false;
         if (canQueryConfig) {
@@ -1935,6 +2023,17 @@ void MainWindow::RefreshVendorServicesDetails() {
 
     CloseServiceHandle(scm);
     m_hasVendorServicesInstalled = installedCount > 0;
+    if (m_matebookE && !m_serviceChangePending) {
+        const bool previous = m_updatingControls;
+        m_updatingControls = true;
+        const bool backup = HasServiceBackup();
+        VendorServicesToggle().IsOn(backup);
+        VendorServicesToggle().IsEnabled(m_hasVendorServicesInstalled || backup);
+        if (backup) VendorServicesStatusText().Text(L"已保存原服务配置。关闭开关可恢复。");
+        else if (installedCount) VendorServicesStatusText().Text(to_hstring(runningCount) + L" / " + to_hstring(installedCount) + L" 项正在运行。停用时保留显示和触控服务。");
+        else VendorServicesStatusText().Text(L"未找到可管理的华为后台服务。");
+        m_updatingControls = previous;
+    }
     m_vendorScmProbed = true;
     m_lastVendorDetailsQueryTick = GetTickCount64();
 }
@@ -2239,7 +2338,7 @@ void MainWindow::RefreshDevicePage(const PenStatus::State* state) {
         state->hasHostHealth &&
         ((!state->penHostHealthy && !state->penVendorMissing) ||
          (!state->kbdHostHealthy && !state->kbdVendorMissing));
-    DeviceEmptyStateText().Text(hostsUnreadable ? L"无法读取设备状态" : L"未接入笔或键盘");
+    DeviceEmptyStateText().Text(hostsUnreadable ? L"尚未从配件组件读到连接状态" : L"未接入笔或键盘");
     DeviceEmptyStateIcon().Glyph(hostsUnreadable ? kEmptyStateWarningGlyph
                                                  : kEmptyStateInfoGlyph);
 
@@ -2254,13 +2353,28 @@ void MainWindow::RefreshState() {
     const bool quickFlyoutVisible = m_quickFlyoutWindow &&
         get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow)->IsVisible();
     if (mainVisible || quickFlyoutVisible) {
-        m_trayConnected = FindTrayWindow() != nullptr;
+        m_trayConnected = !m_matebookE && FindTrayWindow() != nullptr;
     }
     if (!mainVisible && !notifyNeedsRefresh && !quickFlyoutVisible) return;
 
-    if (!m_reader.IsOpen()) m_reader.Open();
     PenStatus::State state{};
-    const bool hasState = m_reader.IsOpen() && m_reader.Read(state);
+    bool hasState = false;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) {
+        state.hasHostHealth = true;
+        if (m_accessories) m_accessories->Read(state);
+        hasState = true;
+        if (mainVisible && GeneralPage().Visibility() == Visibility::Visible &&
+            !m_serviceChangePending && GetTickCount64() - m_lastVendorDetailsQueryTick >= 3000) {
+            RefreshVendorServicesDetails();
+            SyncVendorServicesDetailsVisibility();
+        }
+    } else
+#endif
+    {
+        if (!m_reader.IsOpen()) m_reader.Open();
+        hasState = m_reader.IsOpen() && m_reader.Read(state);
+    }
     if (hasState) {
         if ((state.hasStylusLink && state.stylusLinked) ||
             (state.hasChargingState && state.charging)) m_penSeen = true;
@@ -2481,7 +2595,11 @@ void MainWindow::RefreshControls(const PenStatus::State* state) {
     // 开关一直跟随系统的真实状态，不再因为「本次会话改过」而锁定。两个方向都幂等、也都
     // 立即生效（恢复会把服务起回来），没有需要保护的中间态；改错了当场再改回去就是。
     bool vendorBusy = false;
-    if (!state || !state->hasVendorServices) {
+    if (m_matebookE) {
+        vendorBusy = m_serviceChangePending;
+        SetBusySpinner(VendorServicesProgress(), vendorBusy);
+        if (!m_vendorScmProbed && !vendorBusy) RefreshVendorServicesDetails();
+    } else if (!state || !state->hasVendorServices) {
         SetBusySpinner(VendorServicesProgress(), false);
         VendorServicesStatusText().Text(L"正在连接 OpenEGo Hub 服务…");
         if (state) {
@@ -2532,7 +2650,7 @@ void MainWindow::RefreshControls(const PenStatus::State* state) {
     }
 
     SyncVendorServicesDetailsVisibility();
-    if (m_vendorDetailsExpanded && m_hasVendorServicesInstalled &&
+    if (!m_matebookE && m_vendorDetailsExpanded && m_hasVendorServicesInstalled &&
         (!vendorBusy || GetTickCount64() - m_lastVendorDetailsQueryTick >= 450)) {
         RefreshVendorServicesDetails();
     }
@@ -2665,14 +2783,14 @@ void MainWindow::RefreshControls(const PenStatus::State* state) {
         KeyboardStatusText().Text(kbdStatus);
         HomeKeyboardStatusText().Text(kbdStatus);
     }
-    const bool kbdInteractive = m_trayConnected && !m_exitPending && kbdDetected;
+    const bool kbdInteractive = !m_exitPending && kbdDetected && (m_trayConnected || (m_matebookE && state->hasKbdDetachSupport));
     KeyboardWirelessToggle().IsEnabled(kbdInteractive);
     HomeKeyboardWirelessToggle().IsEnabled(kbdInteractive);
 
     if (m_exitPending) {
         ShowStatus(InfoBarSeverity::Informational, L"正在安全退出",
                    L"正在恢复 HuaweiTHP；确认触控可用后应用会自动关闭。");
-    } else if (!m_trayConnected) {
+    } else if (!m_trayConnected && !m_matebookE) {
         ShowStatus(InfoBarSeverity::Warning, L"托盘未运行",
                    L"请先启动 OpenEGoHubTray.exe，再修改设置。");
     } else if (state && state->hasProviderError) {
@@ -2952,7 +3070,7 @@ void MainWindow::SetInteractiveEnabled(bool enabled) {
     ChargeLimitPreset80Btn().IsEnabled(chargeLimitUsable);
     ChargeLimitPreset90Btn().IsEnabled(chargeLimitUsable);
     ChargeLimitPreset100Btn().IsEnabled(chargeLimitUsable);
-    VendorServicesToggle().IsEnabled(enabled);
+    if (!m_matebookE) VendorServicesToggle().IsEnabled(enabled);
     AutoStartToggle().IsEnabled(enabled);
     // 更新那一格的可用性随后由 RefreshUpdateRow 再收紧一次：服务正在检查或下载时，手动
     // 检查按钮要另外置灰。这里只管托盘断开这一层。
@@ -3074,6 +3192,40 @@ winrt::fire_and_forget MainWindow::VendorServicesToggled(IInspectable const&,
     if (!m_uiReady || m_updatingControls) co_return;
     const bool disable = VendorServicesToggle().IsOn();
 
+    if (m_matebookE) {
+        if (m_serviceChangePending) co_return;
+        auto lifetime = get_strong();
+        apartment_context ui;
+        m_serviceChangePending = true;
+        VendorServicesToggle().IsEnabled(false);
+        SetBusySpinner(VendorServicesProgress(), true);
+        VendorServicesStatusText().Text(disable ? L"正在停用华为后台服务…" : L"正在恢复此前的服务配置…");
+        DWORD error = ERROR_GEN_FAILURE;
+        try {
+            const auto helper = ApplicationDirectory() / L"openehubServices.exe";
+            SHELLEXECUTEINFOW exec{sizeof(exec)};
+            exec.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+            exec.hwnd = WindowHandle();
+            exec.lpVerb = L"runas";
+            exec.lpFile = helper.c_str();
+            exec.lpParameters = disable ? L"disable" : L"restore";
+            exec.nShow = SW_HIDE;
+            if (ShellExecuteExW(&exec)) {
+                winrt::handle worker{exec.hProcess};
+                co_await winrt::resume_on_signal(worker.get());
+                GetExitCodeProcess(worker.get(), &error);
+            } else error = GetLastError();
+        } catch (...) { error = ERROR_GEN_FAILURE; }
+        co_await ui;
+        m_serviceChangePending = false;
+        if (m_closed) co_return;
+        SetBusySpinner(VendorServicesProgress(), false);
+        RefreshVendorServicesDetails();
+        SyncVendorServicesDetailsVisibility();
+        if (error && error != ERROR_CANCELLED) ShowError(L"部分服务设置未完成", L"Windows 错误 " + to_hstring(error) + L"。可展开服务列表查看状态，已有备份可用于恢复。");
+        co_return;
+    }
+
     if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetVendorServicesDisabled, disable)) {
         m_updatingControls = true;
         VendorServicesToggle().IsOn(!disable);
@@ -3186,12 +3338,18 @@ void MainWindow::KeyboardWirelessToggled(IInspectable const& sender, RoutedEvent
     if (!m_uiReady || m_updatingControls) return;
     const auto toggle = sender.try_as<Controls::ToggleSwitch>();
     const bool requested = toggle ? toggle.IsOn() : KeyboardWirelessToggle().IsOn();
-    if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetKeyboardWirelessOnDetach, requested)) {
+    bool sent;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) sent = m_accessories && m_accessories->SetDetachSupport(requested);
+    else
+#endif
+        sent = SendTrayCommand(EGoTouchTrayIpc::Command::SetKeyboardWirelessOnDetach, requested);
+    if (!sent) {
         m_updatingControls = true;
         KeyboardWirelessToggle().IsOn(!requested);
         HomeKeyboardWirelessToggle().IsOn(!requested);
         m_updatingControls = false;
-        ShowError(L"无法修改键盘无线连接设置", L"托盘没有响应，设置没有生效。");
+        ShowError(L"无法修改键盘无线连接设置", L"未收到键盘组件的响应。");
         return;
     }
     m_updatingControls = true;

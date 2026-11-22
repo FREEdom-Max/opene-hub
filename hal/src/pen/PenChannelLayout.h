@@ -8,10 +8,17 @@
 // 模板，因此这里只需要约定名字。
 namespace Gaokun::Pen::Wire {
 
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+inline constexpr wchar_t kSnapshotName[] = L"Local\\openehubPenSnapshot";
+inline constexpr wchar_t kEventPipeName[] = L"\\\\.\\pipe\\openehubPenEvents";
+inline constexpr wchar_t kCommandPipeName[] = L"\\\\.\\pipe\\openehubPenCommands";
+inline constexpr wchar_t kStopEventPrefix[] = L"openehubPenHostStop";
+#else
 inline constexpr wchar_t kSnapshotName[] = L"Global\\GaokunPenSnapshot";
 inline constexpr wchar_t kEventPipeName[] = L"\\\\.\\pipe\\GaokunPenEvents";
 inline constexpr wchar_t kCommandPipeName[] = L"\\\\.\\pipe\\GaokunPenCommands";
 inline constexpr wchar_t kStopEventPrefix[] = L"GaokunPenHostStop";
+#endif
 
 using SnapshotWriter = Channel::SeqlockWriter<Snapshot>;
 using SnapshotReaderImpl = Channel::SeqlockReader<Snapshot>;

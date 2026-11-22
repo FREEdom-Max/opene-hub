@@ -117,7 +117,7 @@
             x:Name="AppTitleBar"
             Grid.Row="0"
             Height="48"
-            Title="OpenEGo Hub">
+            Title="openehub">
             <!-- 图标在代码里设，见 SetTitleBarIconAsync：图片嵌在 exe 的 RCDATA 里，
                  XAML 这边没法直接引。
                  不要改用 PathIconSource——那会让窗口一显示就抛 0xC000027B，是
@@ -284,7 +284,7 @@
                                 <StackPanel Grid.Column="1" Spacing="6" VerticalAlignment="Center">
                                     <TextBlock
                                         x:Name="HomeMachineNameText"
-                                        Text="HUAWEI MateBook E Go"
+                                        Text="HUAWEI MateBook E"
                                         Style="{StaticResource TitleTextBlockStyle}"
                                         TextWrapping="Wrap" />
                                     <TextBlock
@@ -523,7 +523,7 @@
                             <TextBlock Text="常用设置" Style="{StaticResource SettingsGroupHeaderStyle}" />
                             <Border Style="{StaticResource SettingsCompoundCardStyle}">
                                 <StackPanel>
-                                    <Border Style="{StaticResource SettingsCompoundRowStyle}">
+                                    <Border x:Name="HomeTouchRow" Style="{StaticResource SettingsCompoundRowStyle}">
                                         <Grid ColumnSpacing="16" VerticalAlignment="Center">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
@@ -567,7 +567,7 @@
 
                                     <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
 
-                                    <Border Style="{StaticResource SettingsCompoundRowStyle}">
+                                    <Border x:Name="HomePenModeRow" Style="{StaticResource SettingsCompoundRowStyle}">
                                         <Grid ColumnSpacing="16" VerticalAlignment="Center">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
@@ -815,7 +815,15 @@
                                         <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
                                     </StackPanel>
 
-                                    <Border Style="{StaticResource SettingsCompoundRowStyle}">
+                                    <Border x:Name="WindowsPenRow" Visibility="Collapsed" Style="{StaticResource SettingsCompoundRowStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                            <FontIcon Glyph="&#xEDFB;" Style="{StaticResource SettingsRowIconStyle}" />
+                                            <TextBlock Grid.Column="1" Text="笔和 Windows Ink" VerticalAlignment="Center" />
+                                            <Button Grid.Column="2" Content="打开设置" Click="WindowsPenClicked" />
+                                        </Grid>
+                                    </Border>
+                                    <Border x:Name="PenModeRow" Style="{StaticResource SettingsCompoundRowStyle}">
                                         <Grid ColumnSpacing="16" VerticalAlignment="Center">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
@@ -1037,20 +1045,33 @@
                         <StackPanel Grid.Row="0" Grid.Column="0" Spacing="20">
                             <StackPanel Spacing="4">
                                 <TextBlock Text="节能与性能" Style="{StaticResource SettingsGroupHeaderStyle}" />
-                                <Border x:Name="BatteryProfileCard" Visibility="Collapsed" Style="{StaticResource SettingsCompoundCardStyle}">
-                                    <StackPanel Spacing="8" Margin="16,12">
-                                        <TextBlock Text="电池供电档位" />
-                                        <TextBlock x:Name="BatteryProfileStatus" Style="{StaticResource SettingsDescriptionStyle}" />
-                                        <StackPanel Orientation="Horizontal" Spacing="8">
-                                            <Button Content="静音" Tag="Quiet" Click="BatteryProfileClicked" />
-                                            <Button Content="日常" Tag="Daily" Click="BatteryProfileClicked" />
-                                            <Button Content="性能" Tag="Performance" Click="BatteryProfileClicked" />
-                                        </StackPanel>
-                                        <Button Content="恢复此前的电池设置" Tag="Restore" Click="BatteryProfileClicked" />
-                                    </StackPanel>
-                                </Border>
                                 <Border Style="{StaticResource SettingsCompoundCardStyle}">
                                     <StackPanel>
+                                        <Border x:Name="BatteryProfileCard" Visibility="Collapsed" Style="{StaticResource SettingsCompoundRowStyle}">
+                                            <Grid ColumnSpacing="16" VerticalAlignment="Center">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <FontIcon Glyph="&#xEC49;" Style="{StaticResource SettingsRowIconStyle}" />
+                                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                                    <TextBlock Text="电池供电档位" TextWrapping="Wrap" />
+                                                    <TextBlock x:Name="BatteryProfileStatus" Style="{StaticResource SettingsDescriptionStyle}" />
+                                                </StackPanel>
+                                                <DropDownButton x:Name="ProfileMenu" Grid.Column="2" Content="选择档位" MinWidth="128" AutomationProperties.Name="电池供电档位">
+                                                    <DropDownButton.Flyout>
+                                                        <MenuFlyout Placement="Bottom">
+                                                            <MenuFlyoutItem Text="静音" Tag="Quiet" Click="BatteryProfileClicked" />
+                                                            <MenuFlyoutItem Text="日常" Tag="Daily" Click="BatteryProfileClicked" />
+                                                            <MenuFlyoutItem Text="性能" Tag="Performance" Click="BatteryProfileClicked" />
+                                                            <MenuFlyoutSeparator />
+                                                            <MenuFlyoutItem Text="恢复此前的电池设置" Tag="Restore" Click="BatteryProfileClicked" />
+                                                        </MenuFlyout>
+                                                    </DropDownButton.Flyout>
+                                                </DropDownButton>
+                                            </Grid>
+                                        </Border>
                                         <Border Style="{StaticResource SettingsCompoundRowStyle}">
                                             <Grid ColumnSpacing="16" VerticalAlignment="Center">
                                                 <Grid.ColumnDefinitions>
@@ -1505,6 +1526,22 @@
                                 <TextBlock Text="色彩与护眼" Style="{StaticResource SettingsGroupHeaderStyle}" />
                                 <Border Style="{StaticResource SettingsCompoundCardStyle}">
                                     <StackPanel>
+                                        <Border x:Name="NaturalColorRow" Visibility="Collapsed" Style="{StaticResource SettingsCompoundRowStyle}">
+                                            <Grid ColumnSpacing="16" VerticalAlignment="Center">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <FontIcon Glyph="&#xE706;" Style="{StaticResource SettingsRowIconStyle}" />
+                                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                                    <TextBlock Text="自然色彩显示" TextWrapping="Wrap" />
+                                                    <TextBlock x:Name="NaturalColorStatus" Style="{StaticResource SettingsDescriptionStyle}" />
+                                                </StackPanel>
+                                                <ToggleSwitch x:Name="NaturalColorToggle" Grid.Column="2" MinWidth="0" Margin="0,0,-12,0"
+                                                    OnContent="" OffContent="" AutomationProperties.Name="自然色彩显示" Toggled="NaturalColorToggled" />
+                                            </Grid>
+                                        </Border>
                                         <Border Style="{StaticResource SettingsCompoundRowStyle}">
                                             <Grid ColumnSpacing="16" VerticalAlignment="Center">
                                                 <Grid.ColumnDefinitions>
@@ -1750,10 +1787,10 @@
                              这几个值必须写在控件上。同样的设置放进 Style 的 Setter 里，MinWidth 不会生效，
                              实测开关仍按 154 排布。 -->
                         <StackPanel Spacing="4">
-                            <TextBlock Text="接管与兼容" Style="{StaticResource SettingsGroupHeaderStyle}" />
+                            <TextBlock Text="后台服务" Style="{StaticResource SettingsGroupHeaderStyle}" />
                             <Border Style="{StaticResource SettingsCompoundCardStyle}">
                                 <StackPanel>
-                                    <Border Style="{StaticResource SettingsCompoundRowStyle}">
+                                    <Border x:Name="TouchServiceRow" Style="{StaticResource SettingsCompoundRowStyle}">
                                         <Grid ColumnSpacing="16" VerticalAlignment="Center">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
@@ -2052,7 +2089,7 @@
                                 Message="已设为禁用，但有进程没有退出。重启后不会再启动。" />
                         </StackPanel>
 
-                        <StackPanel Spacing="4">
+                        <StackPanel x:Name="TrayStartupGroup" Spacing="4">
                             <TextBlock Text="启动与运行" Style="{StaticResource SettingsGroupHeaderStyle}" />
                             <Border Style="{StaticResource SettingsCompoundCardStyle}">
                                 <StackPanel>
@@ -2401,7 +2438,7 @@
                             </Viewbox>
                                                 <StackPanel Grid.Column="1" Spacing="3" VerticalAlignment="Center">
                                                     <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                                                        <TextBlock Text="OpenEGo Hub"
+                                                        <TextBlock Text="openehub"
                                                                    Style="{StaticResource SubtitleTextBlockStyle}"
                                                                    VerticalAlignment="Center" />
                                                         <Border CornerRadius="4"
@@ -2416,7 +2453,7 @@
                                                                        VerticalAlignment="Center" />
                                                         </Border>
                                                     </StackPanel>
-                                                    <TextBlock Text="HUAWEI MateBook E Go 硬件控制中心"
+                                                    <TextBlock Text="HUAWEI MateBook E 硬件控制中心"
                                                                Style="{StaticResource SettingsDescriptionStyle}" />
                                                     <TextBlock x:Name="UpdateStatusText"
                                                                Text="已是最新版本。"

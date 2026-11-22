@@ -43,13 +43,13 @@ BEGIN
         // 0804 简体中文 + 04b0 Unicode
         BLOCK "080404b0"
         BEGIN
-            VALUE "CompanyName",      "OpenEGo Hub"
-            VALUE "FileDescription",  "OpenEGo Hub 控制面板"
+            VALUE "CompanyName",      "openehub"
+            VALUE "FileDescription",  "openehub 控制面板"
             VALUE "FileVersion",      OPENEGO_VERSION_STRING
-            VALUE "InternalName",     "OpenEGoHubSettings"
+            VALUE "InternalName",     "openehub"
             VALUE "LegalCopyright",   "MIT License"
-            VALUE "OriginalFilename", "OpenEGoHubSettings.exe"
-            VALUE "ProductName",      "OpenEGo Hub"
+            VALUE "OriginalFilename", "openehub.exe"
+            VALUE "ProductName",      "openehub"
             VALUE "ProductVersion",   OPENEGO_VERSION_STRING
         END
     END

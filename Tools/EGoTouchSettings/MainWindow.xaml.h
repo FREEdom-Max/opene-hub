@@ -1,6 +1,10 @@
 #pragma once
 
 #include "MainWindow.g.h"
+#include "HuaweiNaturalColor.h"
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+#include "MateBookAccessories.h"
+#endif
 #include "NotificationWindow.xaml.h"
 #include "QuickFlyoutWindow.xaml.h"
 
@@ -15,6 +19,8 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OneNoteCompatibilityToggled(
         IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void AutoStartToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void NaturalColorToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void WindowsPenClicked(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void KeyboardWirelessToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void TouchProviderToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void SmartChargeToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -91,6 +97,14 @@ private:
     bool IsMainUiVisible();
     void UpdateRefreshPolicy();
     void EnsureMainUiInitialized();
+    bool m_matebookE = false;
+    bool m_serviceChangePending = false;
+    HuaweiNaturalColor m_naturalColor;
+    void RefreshNaturalColor();
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    winrt::fire_and_forget StartAccessories();
+    std::unique_ptr<MateBookAccessories> m_accessories;
+#endif
     void RefreshScreenControls();
     void RefreshPowerModeControl();
     void ToggleQuickFlyout(bool hasAnchor, int anchorX, int anchorY);

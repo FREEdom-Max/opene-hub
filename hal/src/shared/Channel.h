@@ -33,12 +33,17 @@ struct SharedBlock {
 // 拿不到也不需要服务账户的令牌。
 [[nodiscard]] inline bool BuildSharedSecurity(SECURITY_ATTRIBUTES &sa,
                                               SECURITY_DESCRIPTOR &sd) noexcept {
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    // The x64 UI and both accessory hosts run as the same user.
+    return false; // Caller uses the process token's default DACL.
+#else
     if (!InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION)) return false;
     if (!SetSecurityDescriptorDacl(&sd, TRUE, nullptr, FALSE)) return false;
     sa.nLength = sizeof(sa);
     sa.lpSecurityDescriptor = &sd;
     sa.bInheritHandle = FALSE;
     return true;
+#endif
 }
 
 // Global\ 需要 SeCreateGlobalPrivilege，服务账户具备；手工运行宿主时退到会话本地名，

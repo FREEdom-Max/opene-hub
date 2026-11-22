@@ -1,4 +1,4 @@
-# opene-hub
+# openehub
 
 A hardware control centre for the Intel x64 HUAWEI MateBook E 2023, based on [OpenEGo Hub](https://github.com/NihilDigit/openego-hub). The [read-only diagnostic script](scripts/Test-MateBookE.ps1) has been tested on the DRR-WXX and reads battery status, fan speed and temperature. [中文](README.md)
 

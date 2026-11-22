@@ -10,6 +10,7 @@
     <!-- exe 名随产品走，RootNamespace 保持不变：它是 C++/WinRT 命名空间，改它会波及
          生成代码和 .idl，属于内部命名。 -->
     <TargetName>OpenEGoHubSettings</TargetName>
+    <TargetName Condition="'$(Platform)'=='x64'">openehub</TargetName>
     <DefaultLanguage>zh-CN</DefaultLanguage>
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
     <AppContainerApplication>false</AppContainerApplication>
@@ -89,7 +90,7 @@
       <PrecompiledHeaderOutputFile>$(IntDir)pch.pch</PrecompiledHeaderOutputFile>
       <WarningLevel>Level4</WarningLevel>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\..\Common\include;$(MSBuildThisFileDirectory)..\..\hal\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\..\Common\include;$(MSBuildThisFileDirectory)..\..\hal\include;$(MSBuildThisFileDirectory)..\..\hal\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 /bigobj /DMIDL_NS_PREFIX %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -185,6 +186,8 @@
     <ClCompile Include="..\..\hal\src\power\BatteryInfo.cpp" Condition="'$(Platform)'=='x64'">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\..\hal\src\host\PenClient.cpp" Condition="'$(Platform)'=='x64'"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="..\..\hal\src\host\KbdClient.cpp" Condition="'$(Platform)'=='x64'"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="DeviceInfo.cpp" />
     <ClCompile Include="LogExport.cpp" />
     <ClCompile Include="MainWindow.xaml.cpp">

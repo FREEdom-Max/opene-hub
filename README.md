@@ -1,10 +1,10 @@
-# opene-hub
+# openehub
 
 面向华为 MateBook E 2023（Intel x64）的硬件控制台，派生自 [OpenEGo Hub](https://github.com/NihilDigit/openego-hub)。当前可用的[只读诊断脚本](scripts/Test-MateBookE.ps1)已在 DRR-WXX 上验证，可读取电池状态、风扇转速和温度。[English](README.en.md)
 
-双击 [opene-hub.cmd](opene-hub.cmd) 打开 OpenEGo Hub 的 x64 设置中心，在「电池 → 节能与性能 → 电池供电档位」切换三档。「静音」关闭睿频，「日常」允许睿频并使用最佳能效模式，「性能」允许睿频并使用最佳性能模式。「恢复此前的电池设置」会读取与早期试验窗口共用的备份。
+双击 [opene-hub.cmd](opene-hub.cmd) 打开 openehub 的 x64 设置中心，在「电池 → 节能与性能 → 电池供电档位」切换三档。「静音」关闭睿频，「日常」允许睿频并使用最佳能效模式，「性能」允许睿频并使用最佳性能模式。「恢复此前的电池设置」会读取与早期试验窗口共用的备份。
 
-从源码首次启动会构建 WinUI 程序，需要 MSBuild、MSVC x64 编译工具、Windows SDK 10.0.26100 及 NuGet 访问权限。编译输出位于 `build/settings-x64`。这三个档位可独立于 E Go 触控服务使用。
+从源码首次启动会构建 WinUI 程序，需要 MSBuild、MSVC x64 编译工具、Windows SDK 10.0.26100 及 NuGet 访问权限。编译输出位于 `build/settings-x64`。直接启动其中的 openehub.exe 即可。配件页会加载本机华为配件中心的笔和键盘组件。屏幕页通过华为显示管理切换自然色彩。服务页通过 Windows 管理后台服务，并记录操作前的启动类型和运行状态以供恢复。
 
 ## 上游项目说明（MateBook E Go · ARM64）
 
