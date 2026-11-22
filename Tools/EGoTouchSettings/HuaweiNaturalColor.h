@@ -21,7 +21,7 @@ public:
         if (!ready && !library) {
             PWSTR folder{};
             if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, nullptr, &folder))) return -1;
-            const auto dll = std::filesystem::path(folder) / L"Huawei/HwLcdEnhancement/OneControlApi.dll";
+            const auto dll = std::filesystem::path(folder) / L"Huawei" / L"HwLcdEnhancement" / L"OneControlApi.dll";
             CoTaskMemFree(folder);
             library = LoadLibraryExW(dll.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
             if (!library) return -1;
