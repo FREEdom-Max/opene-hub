@@ -1620,7 +1620,7 @@ fire_and_forget MainWindow::BatteryProfileClicked(IInspectable const& sender, Ro
     auto lifetime = get_strong();
     apartment_context ui;
     m_profilePending = true;
-    BatteryProfileCard().IsEnabled(false);
+    BatteryProfileCard().IsHitTestVisible(false);
     BatteryProfileStatus().Text(L"正在应用电池设置…");
     bool applied = false;
     try {
@@ -1648,7 +1648,7 @@ fire_and_forget MainWindow::BatteryProfileClicked(IInspectable const& sender, Ro
     co_await ui;
     m_profilePending = false;
     if (m_closed) co_return;
-    BatteryProfileCard().IsEnabled(true);
+    BatteryProfileCard().IsHitTestVisible(true);
     RefreshPowerModeControl();
     if (!applied) ShowError(L"电池设置未完成", L"请检查程序目录中的 scripts 文件夹；若在其他位置更改过电源设置，可先点击恢复。");
 }
