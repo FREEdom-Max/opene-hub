@@ -2,7 +2,7 @@
 
 A hardware control centre for the Intel x64 HUAWEI MateBook E 2023, based on [OpenEGo Hub](https://github.com/NihilDigit/openego-hub). The [read-only diagnostic script](scripts/Test-MateBookE.ps1) has been tested on the DRR-WXX and reads battery status, fan speed and temperature. [中文](README.md)
 
-Launch [opene-hub.cmd](opene-hub.cmd) for the x64 preview. Refresh to take a sample. Run as administrator for Huawei fan and temperature readings. Quiet mode saves the current plan’s boost policy and disables CPU boost on battery until restored, including after the window closes. Firmware controls fan speed. Battery-life gains require measurement.
+Launch [opene-hub.cmd](opene-hub.cmd) for the x64 preview. Quiet disables boost on battery. Daily allows boost with Windows Best power efficiency. Performance allows boost with Best performance. Profiles persist after closing the window. Restore returns to the battery settings saved before the first profile selection. Refresh to take a sample or run as administrator for fan and temperature readings. Firmware controls fan speed. Battery-life gains require measurement.
 
 ## Upstream project documentation (MateBook E Go · ARM64)
 

@@ -2,7 +2,7 @@
 
 面向华为 MateBook E 2023（Intel x64）的硬件控制台，派生自 [OpenEGo Hub](https://github.com/NihilDigit/openego-hub)。当前可用的[只读诊断脚本](scripts/Test-MateBookE.ps1)已在 DRR-WXX 上验证，可读取电池状态、风扇转速和温度。[English](README.en.md)
 
-双击 [opene-hub.cmd](opene-hub.cmd) 打开 x64 试验窗口。点击「刷新读数」采样一次；以管理员身份启动可读取华为温度和风扇传感器。「电池静音」在当前电源方案中关闭电池供电时的处理器睿频，保存原策略，关闭窗口后仍生效。用「恢复此前的睿频设置」还原。风扇由固件自动调节，续航收益需实测。
+双击 [opene-hub.cmd](opene-hub.cmd) 打开 x64 试验窗口。「静音」在电池供电时关闭睿频；「日常」允许睿频并使用 Windows 最佳能效模式；「性能」允许睿频并使用最佳性能模式。档位在窗口关闭后仍生效，「恢复此前的电池设置」可还原切档前的设置。点击「刷新读数」采样一次，以管理员身份启动可读取华为温度和风扇传感器。风扇由固件自动调节，续航收益需实测。
 
 ## 上游项目说明（MateBook E Go · ARM64）
 

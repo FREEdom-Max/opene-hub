@@ -1,6 +1,6 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
-param([ValidateSet('Window','Status','Quiet','Restore')][string]$Action = 'Window')
+param([ValidateSet('Window','Status','Quiet','Daily','Performance','Restore')][string]$Action = 'Window')
 $ErrorActionPreference = 'Stop'
 
 # Test-MateBookE checks the model before loading vendor code.
@@ -26,6 +26,19 @@ namespace OpenE {
         static extern uint PowerWriteDCValueIndex(IntPtr root, ref Guid scheme, ref Guid group, ref Guid setting, uint value);
         [DllImport("powrprof.dll")]
         static extern uint PowerSetActiveScheme(IntPtr root, ref Guid scheme);
+        [DllImport("powrprof.dll")]
+        static extern uint PowerGetUserConfiguredDCPowerMode(out Guid mode);
+        [DllImport("powrprof.dll")]
+        static extern uint PowerSetUserConfiguredDCPowerMode(ref Guid mode);
+        public static Guid ReadMode() {
+            Guid mode;
+            Check(PowerGetUserConfiguredDCPowerMode(out mode));
+            return mode;
+        }
+        public static void SetMode(Guid mode) {
+            Check(PowerSetUserConfiguredDCPowerMode(ref mode));
+            if (ReadMode() != mode) throw new InvalidOperationException("Battery mode readback failed.");
+        }
         static void Check(uint result) {
             if (result != 0) throw new Win32Exception((int)result);
         }
@@ -41,7 +54,6 @@ namespace OpenE {
             return value;
         }
         public static void Apply(Guid scheme, uint value) {
-            if (scheme != Active()) throw new InvalidOperationException("Active power scheme changed.");
             Check(PowerWriteDCValueIndex(IntPtr.Zero, ref scheme, ref processor, ref boost, value));
             if (scheme == Active()) Check(PowerSetActiveScheme(IntPtr.Zero, ref scheme));
             if (Read(scheme) != value) throw new InvalidOperationException("Power policy readback failed.");
@@ -51,6 +63,24 @@ namespace OpenE {
 '@
 }
 $profileDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'opene-hub\profiles'
+$profiles = [ordered]@{
+    Quiet = @{ Label='静音'; Boost=0; Mode='961cc777-2547-4f9d-8174-7d86181b8a7a' }
+    Daily = @{ Label='日常'; Boost=1; Mode='961cc777-2547-4f9d-8174-7d86181b8a7a' }
+    Performance = @{ Label='性能'; Boost=2; Mode='ded574b5-45a0-4f42-8737-46345c09c238' }
+}
+function Save-ProfileState($path, $state) {
+    [void][IO.Directory]::CreateDirectory($profileDirectory)
+    $temp = "$path.$PID.tmp"
+    try {
+        [IO.File]::WriteAllText($temp, ($state | ConvertTo-Json -Compress))
+        if ([IO.File]::Exists($path)) {
+            [IO.File]::Replace($temp, $path, "$temp.bak")
+        } else { [IO.File]::Move($temp, $path) }
+    } finally {
+        [IO.File]::Delete($temp)
+        [IO.File]::Delete("$temp.bak")
+    }
+}
 function Set-BatteryProfile([string]$requested) {
     $mutex = [Threading.Mutex]::new($false, 'Global\OpenEHub-BatteryBoost')
     $locked = $false
@@ -59,30 +89,48 @@ function Set-BatteryProfile([string]$requested) {
         catch [Threading.AbandonedMutexException] { $locked = $true }
         if (-not $locked) { throw 'Another profile change is in progress.' }
         $scheme = [OpenE.BatteryPolicy]::Active()
-        $current = [OpenE.BatteryPolicy]::Read($scheme)
-        $saved = Join-Path $profileDirectory "$scheme.txt"
-        if ($requested -eq 'Quiet') {
-            if (-not [IO.File]::Exists($saved)) {
-                if ($current -eq 0) { return }
-                [void][IO.Directory]::CreateDirectory($profileDirectory)
-                $temp = "$saved.$PID.tmp"
-                try {
-                    [IO.File]::WriteAllText($temp, [string]$current)
-                    [IO.File]::Move($temp, $saved)
-                } finally { [IO.File]::Delete($temp) }
-            } elseif ($current -ne 0 -and $current -ne [uint32]([IO.File]::ReadAllText($saved))) {
-                throw 'Power policy changed outside opene-hub. Restore first to keep the newer value.'
+        $saved = Join-Path $profileDirectory 'battery-profile.json'
+        $state = $null
+        if ([IO.File]::Exists($saved)) {
+            $state = [IO.File]::ReadAllText($saved) | ConvertFrom-Json
+            if ($requested -ne 'Restore' -and $scheme -ne [guid]$state.Scheme) {
+                throw '电源方案已切换。请先恢复此前设置，再选择新档位。'
             }
-            [OpenE.BatteryPolicy]::Apply($scheme, 0)
-        } elseif ([IO.File]::Exists($saved)) {
-            $original = [uint32]([IO.File]::ReadAllText($saved))
-            if ($original -gt 6) { throw 'Unrecognized saved boost policy.' }
-            # Preserve a newer setting selected elsewhere.
-            if ($current -eq 0 -or $current -eq $original) {
-                [OpenE.BatteryPolicy]::Apply($scheme, $original)
-            }
-            [IO.File]::Delete($saved)
+            $scheme = [guid]$state.Scheme
         }
+        $legacy = Join-Path $profileDirectory "$scheme.txt"
+        $current = [OpenE.BatteryPolicy]::Read($scheme)
+        $mode = [OpenE.BatteryPolicy]::ReadMode().ToString()
+        if ($null -eq $state) {
+            $original = $current
+            if ([IO.File]::Exists($legacy) -and $current -eq 0) {
+                $original = [uint32]([IO.File]::ReadAllText($legacy))
+                if ($original -gt 6) { throw 'Unrecognized saved boost policy.' }
+            }
+            $state = [pscustomobject]@{ Scheme="$scheme"; Boost=$original; Mode=$mode; OwnedBoost=@($current); OwnedMode=@($mode) }
+        }
+        if ($requested -eq 'Restore') {
+            if ($current -in $state.OwnedBoost -and $current -ne $state.Boost) {
+                [OpenE.BatteryPolicy]::Apply($scheme, $state.Boost)
+            }
+            if ($mode -in $state.OwnedMode -and $mode -ne $state.Mode) { [OpenE.BatteryPolicy]::SetMode($state.Mode) }
+            if (Test-Path -LiteralPath $legacy) { [IO.File]::Delete($legacy) }
+            if (Test-Path -LiteralPath $saved) { [IO.File]::Delete($saved) }
+            return
+        }
+        if ($current -notin $state.OwnedBoost -or $mode -notin $state.OwnedMode) {
+            throw '电源设置已在其他位置更改。请先点击恢复，再选择档位。'
+        }
+        $target = $profiles[$requested]
+        # Record both endpoints first so Restore can recover an interrupted change.
+        $state.OwnedBoost = @($current, $target.Boost)
+        $state.OwnedMode = @($mode, $target.Mode)
+        Save-ProfileState $saved $state
+        [OpenE.BatteryPolicy]::Apply($scheme, $target.Boost)
+        if ($mode -ne $target.Mode) { [OpenE.BatteryPolicy]::SetMode($target.Mode) }
+        $state.OwnedBoost = @($target.Boost)
+        $state.OwnedMode = @($target.Mode)
+        Save-ProfileState $saved $state
     } finally {
         if ($locked) { $mutex.ReleaseMutex() }
         $mutex.Dispose()
@@ -91,15 +139,23 @@ function Set-BatteryProfile([string]$requested) {
 
 function Get-PolicyStatus {
     $scheme = [OpenE.BatteryPolicy]::Active()
+    $boost = [OpenE.BatteryPolicy]::Read($scheme)
+    $mode = [OpenE.BatteryPolicy]::ReadMode().ToString()
+    $label = '自定义'
+    foreach ($profile in $profiles.Values) {
+        if ($profile.Boost -eq $boost -and $profile.Mode -eq $mode) { $label = $profile.Label }
+    }
     [pscustomobject]@{
         Scheme = $scheme
-        BatteryBoostIndex = [OpenE.BatteryPolicy]::Read($scheme)
-        RestoreAvailable = [IO.File]::Exists((Join-Path $profileDirectory "$scheme.txt"))
+        BatteryBoostIndex = $boost
+        BatteryPowerMode = $mode
+        BatteryProfile = $label
+        RestoreAvailable = [IO.File]::Exists((Join-Path $profileDirectory "$scheme.txt")) -or [IO.File]::Exists((Join-Path $profileDirectory 'battery-profile.json'))
     }
 }
 
 if ($Action -ne 'Window') {
-    if ($Action -in 'Quiet','Restore') { Set-BatteryProfile $Action }
+    if ($Action -ne 'Status') { Set-BatteryProfile $Action }
     $sample
     Get-PolicyStatus
     return
@@ -124,7 +180,7 @@ $metrics = [Windows.Forms.Label]::new()
 $metrics.AutoSize = $true
 $layout.Controls.Add($metrics)
 $buttons = @{}
-foreach ($entry in ([ordered]@{Quiet='电池静音 · 关闭睿频';Restore='恢复此前的睿频设置';Refresh='刷新读数'}).GetEnumerator()) {
+foreach ($entry in ([ordered]@{Quiet='静音 · 关闭睿频';Daily='日常 · 节能优先，允许睿频';Performance='性能 · 性能优先，允许睿频';Restore='恢复此前的电池设置';Refresh='刷新读数'}).GetEnumerator()) {
     $button = [Windows.Forms.Button]::new()
     $button.AutoSize = $true
     $button.Text = $entry.Value
@@ -141,7 +197,7 @@ function Show-Metrics($reading) {
         "电池净充电功率（负值为放电）  $rate"
         "风扇  $rpm"
         "温度传感器 0  $temp"
-        "电池睿频策略索引  $($policy.BatteryBoostIndex)（0 为禁用）"
+        "当前电池档位  $($policy.BatteryProfile)"
     ) -join [Environment]::NewLine
     $buttons.Restore.Enabled = $policy.RestoreAvailable
 }
@@ -151,6 +207,7 @@ foreach ($button in $buttons.Values) {
             if ($this.Tag -ne 'Refresh') { Set-BatteryProfile $this.Tag }
             Show-Metrics (& $probe)
         } catch {
+            $buttons.Restore.Enabled = $true
             [void][Windows.Forms.MessageBox]::Show($_.Exception.Message, 'opene-hub')
         }
     })
