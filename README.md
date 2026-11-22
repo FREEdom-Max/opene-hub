@@ -1,4 +1,4 @@
-# openehub
+# OpenE hub
 
 面向华为 MateBook E 2023（Intel x64）的硬件控制台，派生自 [OpenEGo Hub](https://github.com/NihilDigit/openego-hub)。当前可用的[只读诊断脚本](scripts/Test-MateBookE.ps1)已在 DRR-WXX 上验证，可读取电池状态、风扇转速和温度。[English](README.en.md)
 

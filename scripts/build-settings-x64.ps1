@@ -11,7 +11,7 @@ $intermediate = Join-Path $root 'build\obj-settings-x64'
 & $msbuild $project /restore /nologo /verbosity:minimal /p:Platform=x64 /p:Configuration=Release "/p:OutDir=$output/" "/p:IntDir=$intermediate/" /p:WindowsAppSDKSelfContained=true
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 $helpers = Join-Path $root 'Tools\EGoTouchSettings\MateBookHelpers.vcxproj'
-foreach ($helper in 'Pen', 'Keyboard', 'Services') {
+foreach ($helper in 'Pen', 'Keyboard', 'Services', 'Fan') {
     & $msbuild $helpers /nologo /verbosity:minimal /p:Platform=x64 /p:Configuration=Release "/p:Helper=$helper" "/p:OutDir=$output/" "/p:IntDir=$intermediate/$helper/"
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
 }

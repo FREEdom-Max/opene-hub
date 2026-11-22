@@ -35,6 +35,11 @@ public:
         }
         return ready ? get(-1) : -1;
     }
+    int ReadGamut() {
+        if (!library) Read();
+        const auto read = library ? reinterpret_cast<Call>(GetProcAddress(library, "GetColorFieldCurrentMode")) : nullptr;
+        return read ? read(-1) : -1;
+    }
     bool Set(bool enabled) {
         return ready && set(enabled) == 0 && notify(feature) == 0 && Read() == static_cast<int>(enabled);
     }

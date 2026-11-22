@@ -222,6 +222,6 @@
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="CopyBatteryProfileBackend" AfterTargets="Build" Condition="'$(Platform)'=='x64'">
-    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\..\scripts\OpenE-Hub.ps1;$(MSBuildThisFileDirectory)..\..\scripts\Test-MateBookE.ps1" DestinationFolder="$(OutDir)scripts" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\..\scripts\OpenE-Hub.ps1;$(MSBuildThisFileDirectory)..\..\scripts\Test-MateBookE.ps1;$(MSBuildThisFileDirectory)..\..\scripts\Set-OpenEHubGamut.ps1" DestinationFolder="$(OutDir)scripts" SkipUnchangedFiles="true" />
   </Target>
 </Project>

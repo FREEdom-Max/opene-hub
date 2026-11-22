@@ -21,6 +21,7 @@ struct MainWindow : MainWindowT<MainWindow> {
     void AutoStartToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void NaturalColorToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void HuaweiDisplayClicked(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void FanAccessClicked(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void WindowsPenClicked(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void KeyboardWirelessToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void TouchProviderToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -118,6 +119,16 @@ private:
     void SyncVendorServicesDetailsVisibility();
     void RefreshVendorServicesDetails();
     bool m_closed = false;
+    bool m_trayIcon = false;
+    bool m_quitRequested = false;
+    bool m_fanStarted = false;
+    winrt::handle m_fanProcess;
+    bool m_gamutPending = false;
+    bool m_gamutReady = false;
+    void RegisterTrayIcon();
+    void StartFanReader(bool elevated);
+    void RefreshGamut();
+    winrt::fire_and_forget ApplyGamut(int mode);
     bool m_profilePending = false;
     bool m_mainUiInitialized = false;
     bool m_mainUiNeedsRender = true;

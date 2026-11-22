@@ -22,6 +22,7 @@
   </ItemDefinitionGroup>
   <ItemGroup Condition="'$(Helper)'=='Pen'"><ClCompile Include="..\..\hal\src\pen\PenHostMain.cpp" /><ClCompile Include="..\..\hal\src\pen\PenService.cpp" /></ItemGroup>
   <ItemGroup Condition="'$(Helper)'=='Keyboard'"><ClCompile Include="..\..\hal\src\keyboard\KeyboardMain.cpp" /><ClCompile Include="..\..\hal\src\keyboard\KeyboardService.cpp" /></ItemGroup>
+  <ItemGroup Condition="'$(Helper)'=='Fan'"><ClCompile Include="MateBookFan.cpp" /></ItemGroup>
   <ItemGroup Condition="'$(Helper)'=='Services'"><ClCompile Include="MateBookServices.cpp" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -117,7 +117,7 @@
             x:Name="AppTitleBar"
             Grid.Row="0"
             Height="48"
-            Title="openehub">
+            Title="OpenE hub">
             <!-- 图标在代码里设，见 SetTitleBarIconAsync：图片嵌在 exe 的 RCDATA 里，
                  XAML 这边没法直接引。
                  不要改用 PathIconSource——那会让窗口一显示就抛 0xC000027B，是
@@ -1371,6 +1371,7 @@
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
 
                                             <TextBlock Grid.Row="0" Grid.Column="0" Text="供电来源"
@@ -1390,6 +1391,11 @@
                                                        Style="{StaticResource SettingsDescriptionStyle}" />
                                             <TextBlock Grid.Row="1" Grid.Column="3" x:Name="BatteryVoltageText"
                                                        Text="—" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock x:Name="FanLabel" Visibility="Collapsed" Grid.Row="2" Text="风扇转速" Style="{StaticResource SettingsDescriptionStyle}" />
+                                            <StackPanel x:Name="FanRow" Visibility="Collapsed" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3" Orientation="Horizontal" Spacing="8">
+                                                <TextBlock x:Name="FanSpeed" Text="读取中…" VerticalAlignment="Center" />
+                                                <Button x:Name="FanAccess" Content="授权读取" Visibility="Collapsed" Click="FanAccessClicked" />
+                                            </StackPanel>
                                         </Grid>
                                     </StackPanel>
                                 </Border>
@@ -2449,7 +2455,7 @@
                             </Viewbox>
                                                 <StackPanel Grid.Column="1" Spacing="3" VerticalAlignment="Center">
                                                     <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                                                        <TextBlock Text="openehub"
+                                                        <TextBlock Text="OpenE hub"
                                                                    Style="{StaticResource SubtitleTextBlockStyle}"
                                                                    VerticalAlignment="Center" />
                                                         <Border CornerRadius="4"

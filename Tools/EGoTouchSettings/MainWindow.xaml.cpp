@@ -301,7 +301,7 @@ std::optional<std::wstring> PickSaveLocation(HWND owner, std::wstring const& sug
 MainWindow::MainWindow() {
     InitializeComponent();
 
-    Title(L"openehub");
+    Title(L"OpenE hub");
     ExtendsContentIntoTitleBar(true);
     SetTitleBar(AppTitleBar());
 
@@ -352,9 +352,17 @@ MainWindow::MainWindow() {
     VisibilityChanged([this](auto const&, auto const&) { UpdateRefreshPolicy(); });
     UpdateRefreshPolicy();
     CreateBridgeWindow();
+    if (m_matebookE) RegisterTrayIcon();
 
     Closed([this](IInspectable const&, WindowEventArgs const&) {
         m_closed = true;
+        if (m_trayIcon) {
+            NOTIFYICONDATAW icon{sizeof(icon)};
+            icon.hWnd = WindowHandle();
+            icon.uID = 1;
+            Shell_NotifyIconW(NIM_DELETE, &icon);
+            m_trayIcon = false;
+        }
         SaveWindowPlacement();
         if (m_originalWndProc) {
             SetWindowLongPtrW(WindowHandle(), GWLP_WNDPROC,
@@ -415,11 +423,78 @@ MainWindow::~MainWindow() {
     DestroyBridgeWindow();
 }
 
+void MainWindow::RegisterTrayIcon() {
+    NOTIFYICONDATAW icon{sizeof(icon)};
+    icon.hWnd = WindowHandle();
+    icon.uID = 1;
+    icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    icon.uCallbackMessage = WM_APP + 252;
+    icon.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON));
+    wcscpy_s(icon.szTip, L"OpenE hub");
+    m_trayIcon = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
+}
+
+void MainWindow::StartFanReader(bool elevated) {
+    if (m_fanProcess && WaitForSingleObject(m_fanProcess.get(), 0) == WAIT_TIMEOUT) return;
+    m_fanStarted = true;
+    auto exe = ApplicationDirectory() / L"openehubFan.exe";
+    auto arg = std::to_wstring(reinterpret_cast<uintptr_t>(WindowHandle()));
+    SHELLEXECUTEINFOW exec{sizeof(exec)};
+    exec.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+    exec.hwnd = WindowHandle();
+    exec.lpVerb = elevated ? L"runas" : L"open";
+    exec.lpFile = exe.c_str();
+    exec.lpParameters = arg.c_str();
+    exec.nShow = SW_HIDE;
+    if (ShellExecuteExW(&exec)) {
+        m_fanProcess.attach(exec.hProcess);
+        FanSpeed().Text(L"读取中…");
+        FanAccess().Visibility(Visibility::Collapsed);
+    } else {
+        FanSpeed().Text(L"未能启动转速读取");
+        FanAccess().Visibility(Visibility::Visible);
+    }
+}
+
+void MainWindow::FanAccessClicked(IInspectable const&, RoutedEventArgs const&) {
+    StartFanReader(true);
+}
+
 LRESULT CALLBACK MainWindow::MainWndProc(
     HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     auto self = static_cast<MainWindow*>(GetPropW(hwnd, L"OpenEGoHub.RefreshPolicy"));
     if (!self || !self->m_originalWndProc) return DefWindowProcW(hwnd, message, wParam, lParam);
     const auto lifetime = self->get_strong();
+    static const UINT taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+    if (self->m_matebookE && message == taskbarCreated) self->RegisterTrayIcon();
+    if (self->m_matebookE && message == WM_APP + 253) {
+        if (!wParam && lParam >= 0) self->FanSpeed().Text(to_hstring(static_cast<int64_t>(lParam)) + L" RPM");
+        else self->FanSpeed().Text(wParam == 1 ? L"需要读取权限" : L"暂无读数");
+        self->FanAccess().Visibility(wParam == 1 ? Visibility::Visible : Visibility::Collapsed);
+        return 0;
+    }
+    if (self->m_trayIcon && message == WM_APP + 252 && wParam == 1) {
+        if (lParam == WM_LBUTTONUP) self->ActivateWindow();
+        if (lParam == WM_RBUTTONUP) {
+            HMENU menu = CreatePopupMenu();
+            if (menu) {
+                AppendMenuW(menu, MF_STRING, 1, L"打开 OpenE hub");
+                AppendMenuW(menu, MF_STRING, 2, L"退出");
+                POINT point{};
+                GetCursorPos(&point);
+                SetForegroundWindow(hwnd);
+                const auto action = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, hwnd, nullptr);
+                DestroyMenu(menu);
+                if (action == 1) self->ActivateWindow();
+                if (action == 2) { self->m_quitRequested = true; self->Close(); }
+            }
+        }
+        return 0;
+    }
+    if (self->m_trayIcon && message == WM_CLOSE && !self->m_quitRequested) {
+        ShowWindow(hwnd, SW_HIDE);
+        return 0;
+    }
     const auto original = self->m_originalWndProc;
     const auto result = CallWindowProcW(original, hwnd, message, wParam, lParam);
     if (message == WM_SHOWWINDOW || message == WM_SIZE) self->UpdateRefreshPolicy();
@@ -447,6 +522,12 @@ void MainWindow::UpdateRefreshPolicy() {
         HomePage().Visibility() == Visibility::Visible;
     const bool batteryPageVisible = mainVisible && m_mainUiInitialized &&
         BatteryPage().Visibility() == Visibility::Visible;
+    if (m_matebookE) {
+        if (batteryPageVisible) {
+            SetPropW(WindowHandle(), L"OpenEHub.ReadFan", reinterpret_cast<HANDLE>(1));
+            if (!m_fanStarted) StartFanReader(false);
+        } else RemovePropW(WindowHandle(), L"OpenEHub.ReadFan");
+    }
     const bool needLiveBattery = batteryPageVisible || homeVisible || quickFlyoutVisible;
     const bool becameVisible = mainVisible && !m_mainUiVisible;
     const bool liveBatteryBecameActive = needLiveBattery && !m_liveBatteryActive;
@@ -767,6 +848,7 @@ void MainWindow::ActivateWindow() {
     }
     EnsureMainUiInitialized();
     const HWND hwnd = WindowHandle();
+    if (!IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_SHOW);
     if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
     Activate();
     SetForegroundWindow(hwnd);
@@ -1124,13 +1206,15 @@ void MainWindow::FillDevicePage() {
     if (_wcsicmp(info.manufacturer.c_str(), L"HUAWEI") == 0 &&
         _wcsicmp(info.productName.c_str(), L"DRR-WXX") == 0) {
         m_matebookE = true;
+        FanLabel().Visibility(Visibility::Visible);
+        FanRow().Visibility(Visibility::Visible);
         BatteryProfileCard().Visibility(Visibility::Visible);
         NaturalColorRow().Visibility(Visibility::Visible);
         HuaweiDisplayRow().Visibility(Visibility::Visible);
         HomeTouchRow().Visibility(Visibility::Collapsed);
         TouchServiceRow().Visibility(Visibility::Collapsed);
-        LoginStartupDescription().Text(L"登录 Windows 后打开 openehub。");
-        ExitActionTitle().Text(L"退出 openehub");
+        LoginStartupDescription().Text(L"登录 Windows 后打开 OpenE hub。");
+        ExitActionTitle().Text(L"退出 OpenE hub");
         ExitActionDescription().Text(L"关闭窗口并结束配件监测。");
         AutoUpdateRow().Visibility(Visibility::Collapsed);
         DWORD startupSize{};
@@ -1667,6 +1751,7 @@ void MainWindow::NaturalColorToggled(IInspectable const&, RoutedEventArgs const&
 void MainWindow::RefreshScreenControls() {
     if (!m_mainUiInitialized) return;
     RefreshNaturalColor();
+    RefreshGamut();
     const auto mode = DisplayModeHelper::QueryPrimary();
     m_supportedRefreshRates = mode.supportedHz;
     m_currentRefreshHz = mode.currentHz;
@@ -3087,7 +3172,7 @@ void MainWindow::SetInteractiveEnabled(bool enabled) {
     HomeTouchToggle().IsEnabled(enabled);
     PenModeSelector().IsEnabled(enabled);
     HomePenModeSelector().IsEnabled(enabled);
-    ColorModeCombo().IsEnabled(enabled);
+    ColorModeCombo().IsEnabled(m_matebookE ? m_gamutReady && !m_gamutPending : enabled);
     SmartChargeToggle().IsEnabled(enabled);
     ColorTemperatureToggle().IsEnabled(enabled);
     // 色温关着的时候滑条与重置按钮一起置灰，与充电上限在智能模式下的处理同理。
@@ -3307,6 +3392,50 @@ winrt::fire_and_forget MainWindow::VendorServicesToggled(IInspectable const&,
     co_return;
 }
 
+void MainWindow::RefreshGamut() {
+    if (!m_matebookE || m_gamutPending) return;
+    int mode = m_naturalColor.ReadGamut();
+    m_gamutReady = mode >= 0 && mode <= 2;
+    const bool previous = m_updatingControls;
+    m_updatingControls = true;
+    ColorModeCombo().SelectedIndex(m_gamutReady ? mode : -1);
+    ColorModeCombo().IsEnabled(m_gamutReady);
+    ColorModeStatusText().Text(m_gamutReady ? L"使用华为出厂校准，仅对内置屏幕生效。" : L"无法读取当前华为色域。");
+    m_updatingControls = previous;
+}
+
+fire_and_forget MainWindow::ApplyGamut(int mode) {
+    auto lifetime = get_strong();
+    apartment_context ui;
+    m_gamutPending = true;
+    ColorModeCombo().IsEnabled(false);
+    ColorModeStatusText().Text(L"正在应用华为色彩校准…");
+    bool ok = false;
+    try {
+        wchar_t system[MAX_PATH]{};
+        GetSystemDirectoryW(system, MAX_PATH);
+        const auto shell = std::filesystem::path(system) / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
+        const auto script = ApplicationDirectory() / L"scripts" / L"Set-OpenEHubGamut.ps1";
+        auto command = L"\"" + shell.wstring() + L"\" -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File \"" +
+                       script.wstring() + L"\" -Mode " + std::to_wstring(mode);
+        STARTUPINFOW startup{sizeof(startup)};
+        PROCESS_INFORMATION process{};
+        if (CreateProcessW(shell.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+            CloseHandle(process.hThread);
+            winrt::handle worker{process.hProcess};
+            co_await resume_on_signal(worker.get());
+            DWORD exitCode{};
+            ok = GetExitCodeProcess(worker.get(), &exitCode) && exitCode == 0;
+        }
+    } catch (...) { ok = false; }
+    co_await ui;
+    m_gamutPending = false;
+    if (m_closed) co_return;
+    RefreshGamut();
+    RefreshHomeScreenSummary();
+    if (!ok || ColorModeCombo().SelectedIndex() != mode) ShowError(L"色域切换未完成", L"华为显示组件未确认所选色域。");
+}
+
 void MainWindow::ColorModeChanged(IInspectable const&, SelectionChangedEventArgs const&) {
     if (!m_uiReady || m_updatingControls) return;
     auto combo = ColorModeCombo();
@@ -3314,6 +3443,10 @@ void MainWindow::ColorModeChanged(IInspectable const&, SelectionChangedEventArgs
     const int index = combo.SelectedIndex();
     if (index < 0) return;
 
+    if (m_matebookE) {
+        if (!m_gamutPending && index <= 2 && index != m_naturalColor.ReadGamut()) ApplyGamut(index);
+        return;
+    }
     // 顺序与 XAML 里那三项一致：Native / sRGB / Display P3。
     // Native 走 Reset：不套任何 LUT 就是面板的原生色域。
     const auto command = index == 0   ? PenControl::ColorModeCommand::Reset
@@ -3687,7 +3820,7 @@ void MainWindow::VendorHintActionClicked(IInspectable const&, RoutedEventArgs co
 }
 
 void MainWindow::ExitClicked(IInspectable const&, RoutedEventArgs const&) {
-    if (m_matebookE) { Close(); return; }
+    if (m_matebookE) { m_quitRequested = true; Close(); return; }
     ConfirmExit();
 }
 
