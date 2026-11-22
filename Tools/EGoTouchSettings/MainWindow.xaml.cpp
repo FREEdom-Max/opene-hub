@@ -56,6 +56,7 @@ bool HasServiceBackup() {
     return result == ERROR_SUCCESS && count > 0;
 }
 
+constexpr wchar_t kWindowsRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t kSettingsRegistryKey[] = L"Software\\OpenEGoHub";
 // 设备页空状态的两个图标。写成码位而不是字面字符：Segoe Fluent 的这两个字形落在私用区，
 // 直接嵌进源码就是两个不可见的方块，读代码时认不出是哪一个。E946 信息，E7BA 警告。
@@ -746,8 +747,9 @@ void MainWindow::ShowNotification(EGoTouchTrayIpc::Notification notification, LP
     }
 
     PenStatus::State state{};
-    if (!m_reader.IsOpen()) m_reader.Open();
-    if (m_reader.IsOpen() && m_reader.Read(state)) {
+    if (!m_matebookE && !m_reader.IsOpen()) m_reader.Open();
+    if (m_matebookE) state = m_lastRenderedState;
+    if ((m_matebookE && m_lastRenderedHasState) || (!m_matebookE && m_reader.IsOpen() && m_reader.Read(state))) {
         if (notification == EGoTouchTrayIpc::Notification::KeyboardConnected) {
             implementation->ShowKeyboardConnected(state);
         } else {
@@ -1124,9 +1126,19 @@ void MainWindow::FillDevicePage() {
         m_matebookE = true;
         BatteryProfileCard().Visibility(Visibility::Visible);
         NaturalColorRow().Visibility(Visibility::Visible);
+        HuaweiDisplayRow().Visibility(Visibility::Visible);
         HomeTouchRow().Visibility(Visibility::Collapsed);
         TouchServiceRow().Visibility(Visibility::Collapsed);
-        TrayStartupGroup().Visibility(Visibility::Collapsed);
+        LoginStartupDescription().Text(L"登录 Windows 后打开 openehub。");
+        ExitActionTitle().Text(L"退出 openehub");
+        ExitActionDescription().Text(L"关闭窗口并结束配件监测。");
+        AutoUpdateRow().Visibility(Visibility::Collapsed);
+        DWORD startupSize{};
+        const bool previous = m_updatingControls;
+        m_updatingControls = true;
+        AutoStartToggle().IsOn(RegGetValueW(HKEY_CURRENT_USER, kWindowsRunKey, L"openehub",
+                                             RRF_RT_REG_SZ, nullptr, nullptr, &startupSize) == ERROR_SUCCESS);
+        m_updatingControls = previous;
         HomePenModeRow().Visibility(Visibility::Collapsed);
         PenModeRow().Visibility(Visibility::Collapsed);
         OneNoteCompatibilityRow().Visibility(Visibility::Collapsed);
@@ -1621,6 +1633,16 @@ fire_and_forget MainWindow::StartAccessories() {
 
 void MainWindow::WindowsPenClicked(IInspectable const&, RoutedEventArgs const&) {
     ShellExecuteW(WindowHandle(), L"open", L"ms-settings:pen", nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void MainWindow::HuaweiDisplayClicked(IInspectable const&, RoutedEventArgs const&) {
+    PWSTR folder{};
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, nullptr, &folder))) return;
+    const auto directory = std::filesystem::path(folder) / L"Huawei/HwLcdEnhancement";
+    CoTaskMemFree(folder);
+    const auto app = directory / L"MonitorManageStart.exe";
+    if (reinterpret_cast<INT_PTR>(ShellExecuteW(WindowHandle(), L"open", app.c_str(), nullptr, directory.c_str(), SW_SHOWNORMAL)) <= 32)
+        ShowError(L"无法打开华为显示管理", L"请检查是否已安装华为显示管理组件。");
 }
 
 void MainWindow::RefreshNaturalColor() {
@@ -2261,7 +2283,7 @@ void MainWindow::RefreshDevicePage(const PenStatus::State* state) {
     const bool present = state->hasKbdPresent && state->kbdPresent;
     // 与笔同理：整帧不带任何键盘信息时保持上一次的显示，见上面那段说明。
     const bool kbdUnavailable = state->hasHostHealth &&
-        (!state->kbdHostHealthy || state->kbdVendorMissing);
+        (!state->kbdHostHealthy || state->kbdVendorMissing) && !(m_matebookE && state->hasKbdPresent && state->kbdPresent);
     const bool kbdStateKnown = kbdUnavailable || state->hasKbdPresent || state->hasKbdBattery ||
                                state->hasKbdCharging || state->hasKbdDetached;
 
@@ -2415,6 +2437,11 @@ void MainWindow::RefreshState() {
         m_kbdSeen != m_lastRenderedKbdSeen;
 
     if (stateChanged) {
+        const bool notify = m_matebookE && m_lastRenderedHasState && DeviceNotificationsToggle().IsOn();
+        const bool penJoined = notify && m_lastRenderedState.hasStylusLink && !m_lastRenderedState.stylusLinked &&
+                               state.hasStylusLink && state.stylusLinked;
+        const bool keyboardJoined = notify && m_lastRenderedState.hasKbdPresent && !m_lastRenderedState.kbdPresent &&
+                                    state.hasKbdPresent && state.kbdPresent;
         m_lastRenderedState = state;
         m_lastRenderedHasState = hasState;
         m_lastRenderedTrayConnected = m_trayConnected;
@@ -2422,6 +2449,8 @@ void MainWindow::RefreshState() {
         m_lastRenderedKbdSeen = m_kbdSeen;
         m_lastRenderedValid = true;
         m_mainUiNeedsRender = true;
+        if (penJoined) ShowNotification(EGoTouchTrayIpc::Notification::PenConnected, 0);
+        if (keyboardJoined) ShowNotification(EGoTouchTrayIpc::Notification::KeyboardConnected, 0);
     }
 
     if (mainVisible && m_mainUiInitialized && m_mainUiNeedsRender) {
@@ -2516,7 +2545,7 @@ void MainWindow::RefreshHomeSummary(const PenStatus::State* state) {
 
         const bool kbdPresent = state->hasKbdPresent && state->kbdPresent;
         const bool kbdUnavailable = state->hasHostHealth &&
-            (!state->kbdHostHealthy || state->kbdVendorMissing);
+            (!state->kbdHostHealthy || state->kbdVendorMissing) && !(m_matebookE && state->hasKbdPresent && state->kbdPresent);
         const bool kbdStateKnown = kbdUnavailable || state->hasKbdPresent || state->hasKbdBattery ||
                                    state->hasKbdCharging || state->hasKbdDetached;
         if (state->kbdModelName[0] != '\0') {
@@ -2778,8 +2807,8 @@ void MainWindow::RefreshControls(const PenStatus::State* state) {
         const hstring kbdStatus{L"键盘与主机分离后继续通过无线方式使用。"};
         KeyboardStatusText().Text(kbdStatus);
         HomeKeyboardStatusText().Text(kbdStatus);
-    } else if (!kbdDetected) {
-        const hstring kbdStatus{L"未检测到键盘，分离后无线连接暂不可用。"};
+    } else if (!kbdDetected || (m_matebookE && !state->hasKbdDetachSupport)) {
+        const hstring kbdStatus{kbdDetected ? L"键盘已连接，华为组件未报告分离后无线连接选项。" : L"未检测到键盘，分离后无线连接暂不可用。"};
         KeyboardStatusText().Text(kbdStatus);
         HomeKeyboardStatusText().Text(kbdStatus);
     }
@@ -2839,6 +2868,13 @@ void MainWindow::UpdateChargeLimitControls(bool smart) {
 // UpdateState 到界面的唯一映射：状态文字、两个按钮的可用性、三个动作的显隐都从同一份状态
 // 算出来。分散到各个点击处理里各改一处的话，每加一个状态都要记得改四个地方。
 void MainWindow::RefreshUpdateRow(const PenStatus::State* state) {
+    if (m_matebookE) {
+        UpdateStatusText().Text(L"在项目页面查看 x64 构建。");
+        SetBusySpinner(UpdateCheckProgress(), false);
+        UpdateCheckButton().Content(box_value(hstring{L"查看构建"}));
+        UpdateCheckButton().IsEnabled(true);
+        return;
+    }
     const bool interactive = m_trayConnected && !m_exitPending;
 
     if (!state) {
@@ -2957,6 +2993,10 @@ void MainWindow::AutoUpdateCheckToggled(IInspectable const&, RoutedEventArgs con
 }
 
 void MainWindow::CheckForUpdatesClicked(IInspectable const&, RoutedEventArgs const&) {
+    if (m_matebookE) {
+        ShellExecuteW(WindowHandle(), L"open", L"https://github.com/FREEdom-Max/opene-hub/actions/workflows/settings-x64.yml", nullptr, nullptr, SW_SHOWNORMAL);
+        return;
+    }
     if (!m_uiReady) return;
     if (!SendTrayCommand(EGoTouchTrayIpc::Command::CheckForUpdates)) {
         ShowError(L"无法检查更新", L"托盘没有响应，请求没有送达。");
@@ -3071,12 +3111,12 @@ void MainWindow::SetInteractiveEnabled(bool enabled) {
     ChargeLimitPreset90Btn().IsEnabled(chargeLimitUsable);
     ChargeLimitPreset100Btn().IsEnabled(chargeLimitUsable);
     if (!m_matebookE) VendorServicesToggle().IsEnabled(enabled);
-    AutoStartToggle().IsEnabled(enabled);
+    AutoStartToggle().IsEnabled(enabled || m_matebookE);
     // 更新那一格的可用性随后由 RefreshUpdateRow 再收紧一次：服务正在检查或下载时，手动
     // 检查按钮要另外置灰。这里只管托盘断开这一层。
     AutoUpdateCheckToggle().IsEnabled(enabled);
     UpdateCheckButton().IsEnabled(enabled);
-    ExitButton().IsEnabled(enabled);
+    ExitButton().IsEnabled(enabled || m_matebookE);
 }
 
 void MainWindow::ShowStatus(
@@ -3168,6 +3208,20 @@ void MainWindow::OneNoteCompatibilityToggled(
 void MainWindow::AutoStartToggled(IInspectable const&, RoutedEventArgs const&) {
     if (m_updatingControls) return;
     const bool requested = AutoStartToggle().IsOn();
+    if (m_matebookE) {
+        const auto program = L"\"" + (ApplicationDirectory() / L"openehub.exe").wstring() + L"\"";
+        const auto result = requested
+            ? RegSetKeyValueW(HKEY_CURRENT_USER, kWindowsRunKey, L"openehub", REG_SZ, program.c_str(),
+                              static_cast<DWORD>((program.size() + 1) * sizeof(wchar_t)))
+            : RegDeleteKeyValueW(HKEY_CURRENT_USER, kWindowsRunKey, L"openehub");
+        if (result != ERROR_SUCCESS && !(result == ERROR_FILE_NOT_FOUND && !requested)) {
+            m_updatingControls = true;
+            AutoStartToggle().IsOn(!requested);
+            m_updatingControls = false;
+            ShowError(L"登录启动设置未完成", L"无法写入当前用户的 Windows 启动项。");
+        }
+        return;
+    }
     if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetAutoStart, requested)) {
         m_updatingControls = true;
         AutoStartToggle().IsOn(!requested);
@@ -3179,6 +3233,10 @@ void MainWindow::AutoStartToggled(IInspectable const&, RoutedEventArgs const&) {
 void MainWindow::DeviceNotificationsToggled(IInspectable const&, RoutedEventArgs const&) {
     if (m_updatingControls) return;
     const bool requested = DeviceNotificationsToggle().IsOn();
+    if (m_matebookE) {
+        WriteUserSetting(L"DeviceNotifications", requested);
+        return;
+    }
     if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetDeviceNotifications, requested)) {
         m_updatingControls = true;
         DeviceNotificationsToggle().IsOn(!requested);
@@ -3222,7 +3280,7 @@ winrt::fire_and_forget MainWindow::VendorServicesToggled(IInspectable const&,
         SetBusySpinner(VendorServicesProgress(), false);
         RefreshVendorServicesDetails();
         SyncVendorServicesDetailsVisibility();
-        if (error && error != ERROR_CANCELLED) ShowError(L"部分服务设置未完成", L"Windows 错误 " + to_hstring(error) + L"。可展开服务列表查看状态，已有备份可用于恢复。");
+        if (error && error != ERROR_CANCELLED) ShowError(L"部分服务设置未完成", L"Windows 错误 " + to_hstring(static_cast<uint32_t>(error)) + L"。可展开服务列表查看状态，已有备份可用于恢复。");
         co_return;
     }
 
@@ -3629,6 +3687,7 @@ void MainWindow::VendorHintActionClicked(IInspectable const&, RoutedEventArgs co
 }
 
 void MainWindow::ExitClicked(IInspectable const&, RoutedEventArgs const&) {
+    if (m_matebookE) { Close(); return; }
     ConfirmExit();
 }
 

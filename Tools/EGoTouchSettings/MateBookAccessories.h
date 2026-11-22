@@ -4,6 +4,7 @@
 #include "GaokunHostExit.h"
 #include "PenStatusChannel.h"
 #include <filesystem>
+#include <vector>
 
 // The native hosts use the installed Huawei accessory plug-ins in the interactive session.
 class MateBookAccessories {
@@ -72,9 +73,43 @@ public:
             strncpy_s(out.kbdFirmware, kbd.firmware, _TRUNCATE);
             strncpy_s(out.kbdModelName, kbd.modelName, _TRUNCATE);
         }
+        // Some Intel firmware versions expose the attached keyboard as a USB HID
+        // keyboard but omit the accessory plug-in's connection report.
+        if (!out.hasKbdPresent || !out.kbdPresent) {
+            const auto now = GetTickCount64();
+            if (now >= nextUsbCheck) {
+                usbKeyboard = HasUsbKeyboard();
+                nextUsbCheck = now + 3000;
+            }
+            if (usbKeyboard) {
+                out.hasKbdPresent = out.kbdPresent = true;
+                out.hasKbdDetached = true;
+                out.kbdDetached = false;
+                out.kbdHostHealthy = true;
+            }
+        }
     }
 
 private:
+    static bool HasUsbKeyboard() {
+        UINT count{};
+        if (GetRawInputDeviceList(nullptr, &count, sizeof(RAWINPUTDEVICELIST)) != 0 || count == 0) return false;
+        std::vector<RAWINPUTDEVICELIST> devices(count);
+        const auto received = GetRawInputDeviceList(devices.data(), &count, sizeof(RAWINPUTDEVICELIST));
+        if (received == static_cast<UINT>(-1)) return false;
+        for (UINT i = 0; i < received; ++i) {
+            if (devices[i].dwType != RIM_TYPEKEYBOARD) continue;
+            wchar_t name[512]{};
+            UINT length = _countof(name);
+            if (GetRawInputDeviceInfoW(devices[i].hDevice, RIDI_DEVICENAME, name, &length) == static_cast<UINT>(-1)) continue;
+            constexpr wchar_t prefix[] = LR"(\\?\HID#VID_12D1&PID_10B8&)";
+            if (_wcsnicmp(name, prefix, _countof(prefix) - 1) == 0) return true;
+        }
+        return false;
+    }
+
+    ULONGLONG nextUsbCheck{};
+    bool usbKeyboard{};
     Gaokun::Pen::HostController penHost;
     Gaokun::Keyboard::HostController keyboardHost;
     Gaokun::Pen::SnapshotReader penReader;

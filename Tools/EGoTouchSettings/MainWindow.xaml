@@ -1542,6 +1542,17 @@
                                                     OnContent="" OffContent="" AutomationProperties.Name="自然色彩显示" Toggled="NaturalColorToggled" />
                                             </Grid>
                                         </Border>
+                                        <Border x:Name="HuaweiDisplayRow" Visibility="Collapsed" Style="{StaticResource SettingsCompoundRowStyle}">
+                                            <Grid ColumnSpacing="16">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                <FontIcon Glyph="&#xE7F4;" Style="{StaticResource SettingsRowIconStyle}" />
+                                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                                    <TextBlock Text="华为显示管理" TextWrapping="Wrap" />
+                                                    <TextBlock Text="在华为面板中调整色域、护眼和色温。" Style="{StaticResource SettingsDescriptionStyle}" />
+                                                </StackPanel>
+                                                <Button Grid.Column="2" Content="打开" AutomationProperties.Name="打开华为显示管理" Click="HuaweiDisplayClicked" />
+                                            </Grid>
+                                        </Border>
                                         <Border Style="{StaticResource SettingsCompoundRowStyle}">
                                             <Grid ColumnSpacing="16" VerticalAlignment="Center">
                                                 <Grid.ColumnDefinitions>
@@ -2089,7 +2100,7 @@
                                 Message="已设为禁用，但有进程没有退出。重启后不会再启动。" />
                         </StackPanel>
 
-                        <StackPanel x:Name="TrayStartupGroup" Spacing="4">
+                        <StackPanel Spacing="4">
                             <TextBlock Text="启动与运行" Style="{StaticResource SettingsGroupHeaderStyle}" />
                             <Border Style="{StaticResource SettingsCompoundCardStyle}">
                                 <StackPanel>
@@ -2136,7 +2147,7 @@
                                             <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
                                                 <TextBlock Text="登录后自动启用" TextWrapping="Wrap" />
                                                 <TextBlock
-                                                    Text="登录 Windows 后启动托盘并接管触控。"
+                                                    x:Name="LoginStartupDescription" Text="登录 Windows 后启动托盘并接管触控。"
                                                     Style="{StaticResource SettingsDescriptionStyle}" />
                                             </StackPanel>
                                             <ToggleSwitch
@@ -2166,9 +2177,9 @@
                                                  一个通知中心图标，与退出毫无关系。 -->
                                             <FontIcon Glyph="&#xE7E8;" Style="{StaticResource SettingsRowIconStyle}" />
                                             <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-                                                <TextBlock Text="退出并交还原厂" TextWrapping="Wrap" />
+                                                <TextBlock x:Name="ExitActionTitle" Text="退出并交还原厂" TextWrapping="Wrap" />
                                                 <TextBlock
-                                                    Text="触控与手写笔交还华为驱动，并关闭托盘。"
+                                                    x:Name="ExitActionDescription" Text="触控与手写笔交还华为驱动，并关闭托盘。"
                                                     Style="{StaticResource SettingsDescriptionStyle}" />
                                             </StackPanel>
                                             <Button
@@ -2176,7 +2187,7 @@
                                                 Grid.Column="2"
                                                 VerticalAlignment="Center"
                                                 Content="退出"
-                                                AutomationProperties.Name="退出并交还原厂"
+                                                AutomationProperties.Name="退出"
                                                 Click="ExitClicked" />
                                         </Grid>
                                     </Border>
@@ -2479,7 +2490,7 @@
 
                                         <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
 
-                                        <Border Style="{StaticResource SettingsCompoundRowStyle}">
+                                        <Border x:Name="AutoUpdateRow" Style="{StaticResource SettingsCompoundRowStyle}">
                                             <Grid ColumnSpacing="16" VerticalAlignment="Center">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto" />
@@ -2630,9 +2641,9 @@
                                                 <HyperlinkButton
                                                     Grid.Column="2"
                                                     VerticalAlignment="Center"
-                                                    Content="NihilDigit/openego-hub"
+                                                    Content="FREEdom-Max/opene-hub"
                                                     Padding="8,4"
-                                                    NavigateUri="https://github.com/NihilDigit/openego-hub" />
+                                                    NavigateUri="https://github.com/FREEdom-Max/opene-hub" />
                                             </Grid>
                                         </Border>
 

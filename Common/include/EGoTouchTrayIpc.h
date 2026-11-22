@@ -10,8 +10,13 @@
 namespace EGoTouchTrayIpc {
 
 inline constexpr wchar_t kTrayWindowClass[] = L"OpenEGoHubTrayPanel";
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+inline constexpr wchar_t kSettingsBridgeWindowClass[] = L"openehubBridge";
+inline constexpr wchar_t kSettingsMutexName[] = L"Local\\openehubSingleton";
+#else
 inline constexpr wchar_t kSettingsBridgeWindowClass[] = L"OpenEGoHubSettingsBridge";
 inline constexpr wchar_t kSettingsMutexName[] = L"Local\\OpenEGoHubSettingsSingleton";
+#endif
 
 // Both processes live in the same interactive session. Keeping the command surface on
 // the tray HWND preserves PenControlChannel's single-writer invariant: the WinUI process

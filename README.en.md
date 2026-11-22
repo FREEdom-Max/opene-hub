@@ -2,9 +2,9 @@
 
 A hardware control centre for the Intel x64 HUAWEI MateBook E 2023, based on [OpenEGo Hub](https://github.com/NihilDigit/openego-hub). The [read-only diagnostic script](scripts/Test-MateBookE.ps1) has been tested on the DRR-WXX and reads battery status, fan speed and temperature. [中文](README.md)
 
-Launch [opene-hub.cmd](opene-hub.cmd) to open the x64 OpenEGo Hub settings window. On the Battery page, Quiet disables boost, Daily allows boost with Best power efficiency, and Performance allows boost with Best performance. Restore uses the same backup as the earlier preview.
+Launch [opene-hub.cmd](opene-hub.cmd) to open the x64 openehub settings window. On the Battery page, Quiet disables boost, Daily allows boost with Best power efficiency, and Performance allows boost with Best performance. Restore uses the same backup as the earlier preview.
 
-The first launch from source builds the WinUI application using MSBuild, the MSVC x64 toolchain, Windows SDK 10.0.26100 and NuGet. The output lives in `build/settings-x64`. These profiles work independently of the E Go touch service.
+The first launch from source builds the WinUI application using MSBuild, the MSVC x64 toolchain, Windows SDK 10.0.26100 and NuGet. The output lives in `build/settings-x64`. Launch openehub.exe directly. The Accessories page uses the installed Huawei accessory components. The Screen page controls Huawei Natural Color. The Services page reads Windows service state and saves the original configuration before disabling a service.
 
 ## Upstream project documentation (MateBook E Go · ARM64)
 

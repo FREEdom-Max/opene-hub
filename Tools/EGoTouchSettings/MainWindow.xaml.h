@@ -20,6 +20,7 @@ struct MainWindow : MainWindowT<MainWindow> {
         IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void AutoStartToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void NaturalColorToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void HuaweiDisplayClicked(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void WindowsPenClicked(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void KeyboardWirelessToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void TouchProviderToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
