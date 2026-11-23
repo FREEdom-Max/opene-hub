@@ -4,6 +4,7 @@
 #include "AccessoryImageLoader.h"
 #include "AccessoryBatteryState.h"
 #include "AppIconResource.h"
+#include "BrandMark.h"
 #include "DeviceInfo.h"
 #include "MateBookServices.h"
 #include "DisplayModeHelper.h"
@@ -19,10 +20,15 @@
 #include "PenStatusUiState.h"
 
 #include <cmath>
+#include <d2d1.h>
+#include <dbt.h>
 #include <dwmapi.h>
 #include <optional>
 #include <filesystem>
 #include <shellapi.h>
+
+#pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "gdi32.lib")
 
 #if __has_include("MainWindow.g.cpp")
 #include "MainWindow.g.cpp"
@@ -38,11 +44,32 @@ namespace winrt::EGoTouchSettings::implementation {
 
 namespace {
 
+constexpr UINT kMsgAccessoryChanged = WM_APP + 254;
+constexpr UINT kMsgPowerModeChanged = WM_APP + 255;
+constexpr UINT_PTR kTrayHoverTimerId = 0x4F45;
+constexpr wchar_t kAccessoryChangedEventName[] = L"Local\\OpenEHubAccessoryChanged";
+constexpr GUID kGuidDevInterfaceHid = {
+    0x4D1E55B2u, 0xF16Fu, 0x11CFu, {0x88u, 0xCBu, 0x00u, 0x11u, 0x11u, 0x00u, 0x00u, 0x30u}};
+
 std::filesystem::path ApplicationDirectory() {
     wchar_t module[32768]{};
     const auto size = GetModuleFileNameW(nullptr, module, static_cast<DWORD>(std::size(module)));
     if (!size || size >= std::size(module)) throw winrt::hresult_error(E_FAIL);
     return std::filesystem::path(module).parent_path();
+}
+
+bool DetectMateBookEModel() noexcept {
+    wchar_t manufacturer[128]{};
+    wchar_t product[128]{};
+    DWORD mSize = sizeof(manufacturer);
+    DWORD pSize = sizeof(product);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS",
+                     L"SystemManufacturer", RRF_RT_REG_SZ, nullptr, manufacturer, &mSize) != ERROR_SUCCESS ||
+        RegGetValueW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS",
+                     L"SystemProductName", RRF_RT_REG_SZ, nullptr, product, &pSize) != ERROR_SUCCESS) {
+        return false;
+    }
+    return _wcsicmp(manufacturer, L"HUAWEI") == 0 && _wcsicmp(product, L"DRR-WXX") == 0;
 }
 
 bool HasServiceBackup() {
@@ -331,31 +358,104 @@ MainWindow::MainWindow() {
         RefreshState();
     });
 
-    // 电池单开一个 1 Hz 的节拍。不搭 m_refreshTimer 的 100 ms：读一次虽然只要几十微秒，
-    // 但显示的数字以分钟为单位，而剩余时间的平滑系数是按每秒一个样本定的。
+    // 电池单开节拍：MateBook E 上采用 2 秒周期以降低前台唤醒；其余设备维持 1 Hz。
     m_batteryTimer = DispatcherTimer();
     m_batteryTimer.Interval(std::chrono::seconds(1));
     m_batteryTimer.Tick([this](IInspectable const&, IInspectable const&) {
         RefreshBatteryLive();
     });
 
-    const bool backgroundLaunch = HasCommandLineSwitch(L"--background");
+    const bool explicitBackground = HasCommandLineSwitch(L"--background");
+    const bool explicitShow = HasCommandLineSwitch(L"--show");
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    m_matebookE = DetectMateBookEModel();
+    if (m_matebookE) {
+        m_batteryTimer.Interval(std::chrono::seconds(2));
+    }
+#endif
+    const bool backgroundLaunch = explicitBackground || (m_matebookE && !explicitShow);
+    m_startsHidden = backgroundLaunch;
     if (!backgroundLaunch) {
+        SystemBackdrop(Microsoft::UI::Xaml::Media::MicaBackdrop{});
         EnsureMainUiInitialized();
         RefreshState();
+    } else if (m_matebookE) {
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+        StartAccessories();
+        PollMateBookHardware(false);
+#endif
     }
 
     SetPropW(WindowHandle(), L"OpenEGoHub.RefreshPolicy", this);
     m_originalWndProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
         WindowHandle(), GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&MainWndProc)));
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) {
+        DEV_BROADCAST_DEVICEINTERFACE_W filter{};
+        filter.dbcc_size = sizeof(filter);
+        filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+        filter.dbcc_classguid = kGuidDevInterfaceHid;
+        m_hidDevNotify = RegisterDeviceNotificationW(
+            WindowHandle(), &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+        if (m_accessories) {
+            m_accessories->SetUsbEventDriven(m_hidDevNotify != nullptr);
+        }
+
+        m_accessoryNotifyEvent = CreateEventW(nullptr, FALSE, FALSE, kAccessoryChangedEventName);
+        if (m_accessoryNotifyEvent) {
+            (void)RegisterWaitForSingleObject(
+                &m_accessoryNotifyWait, m_accessoryNotifyEvent,
+                &MainWindow::OnAccessoryChangedCallback, WindowHandle(),
+                INFINITE, WT_EXECUTEDEFAULT);
+        }
+
+        const HWND mainHwnd = WindowHandle();
+        m_freqBinder.Start([mainHwnd]() {
+            if (mainHwnd) (void)PostMessageW(mainHwnd, kMsgPowerModeChanged, 0, 0);
+        });
+
+        // 若已启用开机自启，自动迁移旧版（缺 --background）或移动目录后的启动路径。
+        wchar_t existingRun[1024]{};
+        DWORD existingBytes = sizeof(existingRun);
+        if (RegGetValueW(HKEY_CURRENT_USER, kWindowsRunKey, L"openehub",
+                         RRF_RT_REG_SZ, nullptr, existingRun, &existingBytes) == ERROR_SUCCESS) {
+            const std::wstring expected =
+                L"\"" + (ApplicationDirectory() / L"openehub.exe").wstring() + L"\" --background";
+            if (_wcsicmp(existingRun, expected.c_str()) != 0) {
+                (void)RegSetKeyValueW(
+                    HKEY_CURRENT_USER, kWindowsRunKey, L"openehub", REG_SZ,
+                    expected.c_str(), static_cast<DWORD>((expected.size() + 1) * sizeof(wchar_t)));
+            }
+        }
+    }
+#endif
     AppWindow().Changed([this](auto const&, auto const&) { UpdateRefreshPolicy(); });
     VisibilityChanged([this](auto const&, auto const&) { UpdateRefreshPolicy(); });
-    UpdateRefreshPolicy();
     CreateBridgeWindow();
     if (m_matebookE) RegisterTrayIcon();
+    UpdateRefreshPolicy();
 
     Closed([this](IInspectable const&, WindowEventArgs const&) {
         m_closed = true;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+        if (const auto hwnd = WindowHandle()) {
+            KillTimer(hwnd, kTrayHoverTimerId);
+        }
+        m_trayHoverArmed = false;
+        if (m_accessoryNotifyWait) {
+            (void)UnregisterWaitEx(m_accessoryNotifyWait, INVALID_HANDLE_VALUE);
+            m_accessoryNotifyWait = nullptr;
+        }
+        if (m_accessoryNotifyEvent) {
+            CloseHandle(m_accessoryNotifyEvent);
+            m_accessoryNotifyEvent = nullptr;
+        }
+        if (m_hidDevNotify) {
+            (void)UnregisterDeviceNotification(m_hidDevNotify);
+            m_hidDevNotify = nullptr;
+        }
+        m_freqBinder.StopAndRestore();
+#endif
         if (m_trayIcon) {
             NOTIFYICONDATAW icon{sizeof(icon)};
             icon.hWnd = WindowHandle();
@@ -363,6 +463,7 @@ MainWindow::MainWindow() {
             Shell_NotifyIconW(NIM_DELETE, &icon);
             m_trayIcon = false;
         }
+        ReleaseTrayIconHandle();
         SaveWindowPlacement();
         if (m_originalWndProc) {
             SetWindowLongPtrW(WindowHandle(), GWLP_WNDPROC,
@@ -389,6 +490,10 @@ MainWindow::MainWindow() {
             m_quickFlyoutWindow = nullptr;
         }
         m_reader.Close();
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+        m_hwClient.Close();
+        m_accessories.reset();
+#endif
         DestroyBridgeWindow();
     });
 }
@@ -423,41 +528,763 @@ MainWindow::~MainWindow() {
     DestroyBridgeWindow();
 }
 
+namespace {
+
+bool ReadTaskbarDarkMode() noexcept {
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+    DWORD type = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER,
+                     L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"SystemUsesLightTheme", RRF_RT_REG_DWORD, &type, &value, &size) != ERROR_SUCCESS) {
+        return true;
+    }
+    return value == 0;
+}
+
+void DrawAdaptiveBrandMark(ID2D1RenderTarget* rt, ID2D1SolidColorBrush* brush, int px) {
+    const float scale = static_cast<float>(px) / Brand::kMarkViewBox;
+    const bool compact = px <= Brand::kMarkSmallSizePx;
+    const size_t count = std::size(Brand::kMarkEllipses);
+
+    for (size_t i = 0; i < count; ++i) {
+        if (compact && i != 0 && i + 1 != count) continue;
+
+        const Brand::MarkEllipse& e = Brand::kMarkEllipses[i];
+        const bool isCore = (i + 1 == count);
+        const float coreScale = (compact && isCore) ? Brand::kMarkSmallCoreScale : 1.0f;
+
+        const D2D1_POINT_2F center = D2D1::Point2F(e.cx * scale, e.cy * scale);
+        const D2D1_ELLIPSE shape = D2D1::Ellipse(
+            center, e.rx * scale * coreScale, e.ry * scale * coreScale);
+
+        const float alpha = (compact && i == 0) ? 1.0f : e.opacity;
+        D2D1_COLOR_F color = brush->GetColor();
+        color.a = alpha;
+        brush->SetColor(color);
+
+        rt->SetTransform(D2D1::Matrix3x2F::Rotation(Brand::kMarkRotationDeg, center));
+        if (e.Filled()) {
+            rt->FillEllipse(shape, brush);
+        } else {
+            rt->DrawEllipse(shape, brush, e.strokeWidth * scale);
+        }
+        rt->SetTransform(D2D1::Matrix3x2F::Identity());
+    }
+}
+
+HICON CreateAdaptiveTrayIcon(int px, bool darkBackground) noexcept {
+    if (px <= 0) return nullptr;
+    ID2D1Factory* factory = nullptr;
+    if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &factory)) || !factory) {
+        return nullptr;
+    }
+
+    HDC screenDc = GetDC(nullptr);
+    HDC memDc = CreateCompatibleDC(screenDc);
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = px;
+    bmi.bmiHeader.biHeight = -px;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP color = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HICON icon = nullptr;
+    bool drew = false;
+
+    if (color) {
+        HGDIOBJ oldBmp = SelectObject(memDc, color);
+        D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+            96.0f, 96.0f);
+
+        ID2D1DCRenderTarget* rt = nullptr;
+        if (SUCCEEDED(factory->CreateDCRenderTarget(&props, &rt)) && rt) {
+            RECT bindRect{0, 0, px, px};
+            ID2D1SolidColorBrush* brush = nullptr;
+            if (SUCCEEDED(rt->BindDC(memDc, &bindRect)) &&
+                SUCCEEDED(rt->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f), &brush)) &&
+                brush) {
+                rt->BeginDraw();
+                rt->Clear(D2D1::ColorF(0, 0.0f));
+                brush->SetColor(darkBackground ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f)
+                                               : D2D1::ColorF(0.10f, 0.10f, 0.10f, 1.0f));
+                DrawAdaptiveBrandMark(rt, brush, px);
+                drew = SUCCEEDED(rt->EndDraw());
+                brush->Release();
+            }
+            rt->Release();
+        }
+        SelectObject(memDc, oldBmp);
+
+        if (drew) {
+            const int maskStride = ((px + 15) / 16) * 2;
+            std::vector<BYTE> maskBits(static_cast<size_t>(maskStride) * static_cast<size_t>(px), 0);
+            if (HBITMAP mask = CreateBitmap(px, px, 1, 1, maskBits.data())) {
+                ICONINFO info{};
+                info.fIcon = TRUE;
+                info.hbmMask = mask;
+                info.hbmColor = color;
+                icon = CreateIconIndirect(&info);
+                DeleteObject(mask);
+            }
+        }
+        DeleteObject(color);
+    }
+
+    DeleteDC(memDc);
+    ReleaseDC(nullptr, screenDc);
+    factory->Release();
+    return icon;
+}
+
+} // namespace
+
+void MainWindow::ReleaseTrayIconHandle() noexcept {
+    if (m_trayIconOwned && m_trayIconHandle) {
+        DestroyIcon(m_trayIconHandle);
+    }
+    m_trayIconHandle = nullptr;
+    m_trayIconOwned = false;
+    m_trayIconPx = 0;
+}
+
+void MainWindow::RefreshTrayIconImage() {
+    const bool dark = ReadTaskbarDarkMode();
+    const int px = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem());
+    if (m_trayIconHandle && px == m_trayIconPx && dark == m_trayIconDark) {
+        return;
+    }
+
+    HICON fresh = CreateAdaptiveTrayIcon(px, dark);
+    const bool owned = fresh != nullptr;
+    if (!fresh) {
+        fresh = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON));
+    }
+    if (!fresh) return;
+
+    HICON previous = m_trayIconHandle;
+    const bool previousOwned = m_trayIconOwned;
+    m_trayIconHandle = fresh;
+    m_trayIconOwned = owned;
+    m_trayIconDark = dark;
+    m_trayIconPx = px;
+
+    if (m_trayIcon) {
+        NOTIFYICONDATAW icon{sizeof(icon)};
+        icon.hWnd = WindowHandle();
+        icon.uID = 1;
+        icon.uFlags = NIF_ICON;
+        icon.hIcon = m_trayIconHandle;
+        (void)Shell_NotifyIconW(NIM_MODIFY, &icon);
+    }
+    if (previousOwned && previous) DestroyIcon(previous);
+}
+
+std::wstring MainWindow::BuildTrayTooltipText() {
+    std::wstring tip = L"OpenE hub";
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE && m_hasHwSnapshot) {
+        const bool hasTemp = m_hwSnapshot.HasCpuTemp();
+        const bool hasFan = m_hwSnapshot.HasFan();
+        if (hasTemp || hasFan) {
+            tip += L"\n";
+            if (hasTemp) {
+                tip += L"CPU " + std::to_wstring(m_hwSnapshot.cpuTempC) + L" °C";
+            }
+            if (hasTemp && hasFan) {
+                tip += L" · ";
+            }
+            if (hasFan) {
+                tip += L"风扇 " + std::to_wstring(m_hwSnapshot.fanRpm) + L" RPM";
+            }
+        }
+    }
+#endif
+    PenStatus::State liveState{};
+    bool hasLiveState = false;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE && m_accessories) {
+        liveState.hasHostHealth = true;
+        m_accessories->Read(liveState);
+        hasLiveState = true;
+    } else
+#endif
+    if (m_lastRenderedHasState) {
+        liveState = m_lastRenderedState;
+        hasLiveState = true;
+    }
+
+    if (hasLiveState) {
+        const auto& st = liveState;
+        if (AccessoryBattery::HasPenBattery(st)) {
+            tip += L"\n手写笔 " + std::to_wstring(st.batteryLevel) + L"%";
+            if (st.hasChargingState && st.charging) tip += L"（充电中）";
+        } else if (st.hasDeviceAttached && st.deviceAttached) {
+            tip += L"\n手写笔 已吸附";
+        } else if (st.hasStylusLink && st.stylusLinked) {
+            tip += L"\n手写笔 已连接";
+        }
+
+        if (st.hasKbdPresent && st.kbdPresent) {
+            if (AccessoryBattery::HasKeyboardBattery(st)) {
+                tip += L"\n键盘 " + std::to_wstring(st.kbdBatteryLevel) + L"%";
+                if (st.hasKbdCharging && st.kbdCharging) tip += L"（充电中）";
+            } else if (st.hasKbdDetached) {
+                tip += st.kbdDetached ? L"\n键盘 已分离" : L"\n键盘 已吸附";
+            } else {
+                tip += L"\n键盘 已连接";
+            }
+        }
+    }
+    return tip;
+}
+
+void MainWindow::RefreshTrayTooltip() {
+    if (!m_trayIcon || m_closed) return;
+    const std::wstring tip = BuildTrayTooltipText();
+    if (tip == m_lastTrayTip) return;
+    m_lastTrayTip = tip;
+
+    NOTIFYICONDATAW tipData{sizeof(tipData)};
+    tipData.hWnd = WindowHandle();
+    tipData.uID = 1;
+    tipData.uFlags = NIF_TIP;
+    wcsncpy_s(tipData.szTip, tip.c_str(), _TRUNCATE);
+    (void)Shell_NotifyIconW(NIM_MODIFY, &tipData);
+}
+
 void MainWindow::RegisterTrayIcon() {
+    RefreshTrayIconImage();
+    const std::wstring tip = BuildTrayTooltipText();
+    m_lastTrayTip = tip;
     NOTIFYICONDATAW icon{sizeof(icon)};
     icon.hWnd = WindowHandle();
     icon.uID = 1;
     icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     icon.uCallbackMessage = WM_APP + 252;
-    icon.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON));
-    wcscpy_s(icon.szTip, L"OpenE hub");
+    icon.hIcon = m_trayIconHandle
+        ? m_trayIconHandle
+        : LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON));
+    wcsncpy_s(icon.szTip, tip.c_str(), _TRUNCATE);
     m_trayIcon = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
-}
-
-void MainWindow::StartFanReader(bool elevated) {
-    if (m_fanProcess && WaitForSingleObject(m_fanProcess.get(), 0) == WAIT_TIMEOUT) return;
-    m_fanStarted = true;
-    auto exe = ApplicationDirectory() / L"openehubFan.exe";
-    auto arg = std::to_wstring(reinterpret_cast<uintptr_t>(WindowHandle()));
-    SHELLEXECUTEINFOW exec{sizeof(exec)};
-    exec.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
-    exec.hwnd = WindowHandle();
-    exec.lpVerb = elevated ? L"runas" : L"open";
-    exec.lpFile = exe.c_str();
-    exec.lpParameters = arg.c_str();
-    exec.nShow = SW_HIDE;
-    if (ShellExecuteExW(&exec)) {
-        m_fanProcess.attach(exec.hProcess);
-        FanSpeed().Text(L"读取中…");
-        FanAccess().Visibility(Visibility::Collapsed);
-    } else {
-        FanSpeed().Text(L"未能启动转速读取");
-        FanAccess().Visibility(Visibility::Visible);
+    if (m_trayIcon) {
+        icon.uVersion = NOTIFYICON_VERSION;
+        (void)Shell_NotifyIconW(NIM_SETVERSION, &icon);
     }
 }
 
+void MainWindow::StartFanReader(bool elevated) {
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (elevated) {
+        InstallHardwareServiceAsync();
+    } else {
+        PollMateBookHardware(true);
+    }
+#else
+    (void)elevated;
+#endif
+}
+
 void MainWindow::FanAccessClicked(IInspectable const&, RoutedEventArgs const&) {
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) {
+        InstallHardwareServiceAsync();
+        return;
+    }
+#endif
     StartFanReader(true);
+}
+
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+VOID CALLBACK MainWindow::OnAccessoryChangedCallback(PVOID parameter, BOOLEAN) {
+    if (const auto hwnd = static_cast<HWND>(parameter)) {
+        (void)PostMessageW(hwnd, kMsgAccessoryChanged, 0, 0);
+    }
+}
+
+void MainWindow::InvalidateFlyoutHardwareCache() noexcept {
+    m_lastFlyoutQueryTick = 0;
+}
+
+void MainWindow::PollMateBookHardware(bool wakeSensors) {
+    if (!m_matebookE || m_closed) return;
+    MateBookHw::Snapshot snap{};
+    m_hasHwSnapshot = m_hwClient.ReadSnapshot(snap);
+    if (m_hasHwSnapshot) {
+        m_hwSnapshot = snap;
+        if (wakeSensors) {
+            const ULONGLONG now = GetTickCount64();
+            // OpenEHubHwService 单次唤醒后维持 6 秒采样，4 秒节流即可保证连续刷新且减半管道通信。
+            if (!m_hwWakeInFlight && (now - m_lastHwWakeTick >= 4000)) {
+                m_lastHwWakeTick = now;
+                WakeMateBookHardwareAsync();
+            }
+        }
+    }
+    if (m_mainUiInitialized) {
+        if (m_hasHwSnapshot && m_hwSnapshot.HasFan()) {
+            FanSpeed().Text(to_hstring(m_hwSnapshot.fanRpm) + L" RPM");
+        } else if (m_hwInstallPending) {
+            FanSpeed().Text(L"正在授权…");
+        } else {
+            FanSpeed().Text(m_hasHwSnapshot ? L"暂无读数" : L"需要权限");
+        }
+
+        if (m_hasHwSnapshot && m_hwSnapshot.HasCpuTemp()) {
+            CpuTempText().Text(to_hstring(m_hwSnapshot.cpuTempC) + L" °C");
+        } else {
+            CpuTempText().Text(L"—");
+        }
+
+        const bool showAuth = !m_hasHwSnapshot && !m_hwInstallPending;
+        FanAccess().Visibility(showAuth ? Visibility::Visible : Visibility::Collapsed);
+    }
+    RefreshTrayTooltip();
+}
+
+fire_and_forget MainWindow::WakeMateBookHardwareAsync() {
+    auto lifetime = get_strong();
+    m_hwWakeInFlight = true;
+    apartment_context ui;
+    MateBookHw::CommandReply reply{};
+    bool ok = false;
+    try {
+        co_await resume_background();
+        ok = MateBookHw::Client::SendCommand(MateBookHw::CommandKind::WakeSensors, 0, &reply, 1200);
+    } catch (...) {
+        ok = false;
+    }
+    co_await ui;
+    m_hwWakeInFlight = false;
+    if (m_closed) co_return;
+    if (ok) {
+        m_hwSnapshot = reply.snapshot;
+        m_hasHwSnapshot = true;
+        PollMateBookHardware(false);
+    }
+}
+
+fire_and_forget MainWindow::InstallHardwareServiceAsync() {
+    if (m_hwInstallPending) co_return;
+    auto lifetime = get_strong();
+    apartment_context ui;
+    m_hwInstallPending = true;
+    if (m_mainUiInitialized) {
+        FanSpeed().Text(L"正在授权…");
+        FanAccess().Visibility(Visibility::Collapsed);
+    }
+
+    bool ok = false;
+    try {
+        const auto exe = ApplicationDirectory() / L"openehubHw.exe";
+        SHELLEXECUTEINFOW exec{sizeof(exec)};
+        exec.fMask = SEE_MASK_NOCLOSEPROCESS;
+        exec.hwnd = WindowHandle();
+        exec.lpVerb = L"runas";
+        exec.lpFile = exe.c_str();
+        exec.lpParameters = L"--install-service";
+        exec.nShow = SW_HIDE;
+        if (ShellExecuteExW(&exec) && exec.hProcess) {
+            winrt::handle proc{exec.hProcess};
+            co_await resume_on_signal(proc.get());
+            DWORD exitCode = 1;
+            ok = GetExitCodeProcess(proc.get(), &exitCode) && exitCode == 0;
+        }
+    } catch (...) {
+        ok = false;
+    }
+    co_await ui;
+    m_hwInstallPending = false;
+    if (m_closed) co_return;
+
+    m_hwClient.Close();
+    PollMateBookHardware(true);
+    m_lastRenderedValid = false;
+    m_mainUiNeedsRender = true;
+    RefreshState();
+    if (m_quickFlyoutWindow &&
+        get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow)->IsVisible()) {
+        get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow)
+            ->UpdateState(BuildQuickFlyoutState());
+    }
+    if (!ok) {
+        ShowError(L"未能启用硬件读取服务", L"需要管理员权限以访问风扇转速、CPU 温度和充电保护接口。");
+    }
+}
+
+fire_and_forget MainWindow::ApplyMateBookChargeLimitAsync(uint8_t percent) {
+    if (!m_matebookE || m_chargeCommandPending) co_return;
+    auto lifetime = get_strong();
+    apartment_context ui;
+    m_chargeCommandPending = true;
+    const bool smart = (percent == 0);
+    const uint8_t snapped = smart
+        ? 0
+        : static_cast<uint8_t>(Gaokun::Power::SnapChargeLimit(static_cast<int>(percent)));
+    BeginChargeLimitEcho(snapped);
+    if (m_mainUiInitialized) {
+        SetInteractiveEnabled(m_trayConnected && !m_exitPending);
+    }
+
+    bool ok = false;
+    MateBookHw::CommandReply reply{};
+    try {
+        const auto kind = smart ? MateBookHw::CommandKind::SetSmartCharge
+                                : MateBookHw::CommandKind::SetChargeLimit;
+        co_await resume_background();
+        ok = MateBookHw::Client::SendCommand(kind, snapped, &reply, 4000);
+    } catch (...) {
+        ok = false;
+    }
+
+    if (!ok) {
+        // Hardware service not installed/running yet: elevate once to install it, then apply.
+        co_await ui;
+        if (m_closed) { m_chargeCommandPending = false; co_return; }
+        bool installed = false;
+        try {
+            const auto exe = ApplicationDirectory() / L"openehubHw.exe";
+            SHELLEXECUTEINFOW exec{sizeof(exec)};
+            exec.fMask = SEE_MASK_NOCLOSEPROCESS;
+            exec.hwnd = WindowHandle();
+            exec.lpVerb = L"runas";
+            exec.lpFile = exe.c_str();
+            exec.lpParameters = L"--install-service";
+            exec.nShow = SW_HIDE;
+            if (ShellExecuteExW(&exec) && exec.hProcess) {
+                winrt::handle proc{exec.hProcess};
+                co_await resume_on_signal(proc.get());
+                DWORD exitCode = 1;
+                installed = GetExitCodeProcess(proc.get(), &exitCode) && exitCode == 0;
+            }
+        } catch (...) {
+            installed = false;
+        }
+        if (installed) {
+            try {
+                const auto kind = smart ? MateBookHw::CommandKind::SetSmartCharge
+                                        : MateBookHw::CommandKind::SetChargeLimit;
+                co_await resume_background();
+                ok = MateBookHw::Client::SendCommand(kind, snapped, &reply, 4000);
+            } catch (...) {
+                ok = false;
+            }
+        }
+    }
+
+    co_await ui;
+    m_chargeCommandPending = false;
+    if (m_closed) co_return;
+
+    m_chargeLimitAwaitingEcho = false;
+    if (ok) {
+        m_hwClient.Close();
+        m_hwSnapshot = reply.snapshot;
+        m_hasHwSnapshot = true;
+        if (smart) {
+            WriteUserSetting(L"ChargeLimit", static_cast<DWORD>(Gaokun::Power::kSmartChargeStopPercent));
+        } else {
+            WriteUserSetting(L"ChargeLimit", static_cast<DWORD>(snapped));
+        }
+    } else {
+        ShowError(L"充电保护设置未完成", L"需要管理员权限写入 EC 充电保护设置。");
+    }
+
+    PollMateBookHardware(true);
+    m_lastRenderedValid = false;
+    m_mainUiNeedsRender = true;
+    RefreshState();
+    if (m_quickFlyoutWindow &&
+        get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow)->IsVisible()) {
+        get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow)
+            ->UpdateState(BuildQuickFlyoutState());
+    }
+}
+
+void MainWindow::ShowMateBookTrayMenu(HWND hwnd) {
+    if (m_quickFlyoutWindow) {
+        auto* flyout = get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow);
+        if (flyout->IsVisible()) flyout->HideFlyout();
+    }
+
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+
+    const bool displayOk = m_naturalColor.IsDisplayControlAvailable();
+    const bool eyeOn = CurrentEyeComfortEnabled();
+    const int nc = m_naturalColor.Read();
+    const bool ncOk = (nc == 0 || nc == 1);
+    const bool ncOn = (nc == 1);
+
+    PollMateBookHardware(false);
+    bool hasCharge = false;
+    bool smartCharge = true;
+    if (m_chargeLimitAwaitingEcho) {
+        hasCharge = true;
+        smartCharge = (m_chargeLimitRequested == 0);
+    } else if (m_hasHwSnapshot && m_hwSnapshot.HasCharge()) {
+        hasCharge = true;
+        smartCharge = !m_hwSnapshot.ChargeManual();
+    } else {
+        bool manual = false;
+        uint8_t cap = 100;
+        if (MateBookHw::Client::ReadVendorChargeFallback(manual, cap)) {
+            hasCharge = true;
+            smartCharge = !manual;
+        }
+    }
+
+    PenStatus::State accState{};
+    bool kbdAvailable = false;
+    bool kbdWirelessOn = false;
+    if (m_accessories) {
+        m_accessories->Read(accState);
+        if (accState.hasKbdPresent && accState.kbdPresent && accState.hasKbdDetachSupport) {
+            kbdAvailable = true;
+            kbdWirelessOn = m_kbdDetachAwaitingEcho ? m_kbdDetachRequested : accState.kbdDetachSupport;
+        }
+    }
+
+    constexpr UINT kCmdOpen = 1;
+    constexpr UINT kCmdExit = 2;
+    constexpr UINT kCmdEye = 10;
+    constexpr UINT kCmdNatural = 11;
+    constexpr UINT kCmdSmartCharge = 12;
+    constexpr UINT kCmdKbdWireless = 13;
+
+    AppendMenuW(menu, MF_STRING | MF_DEFAULT, kCmdOpen, L"打开 OpenE hub");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | (eyeOn ? MF_CHECKED : 0) | (displayOk ? 0 : MF_GRAYED),
+                kCmdEye, L"护眼模式");
+    AppendMenuW(menu, MF_STRING | (ncOn ? MF_CHECKED : 0) | (ncOk ? 0 : MF_GRAYED),
+                kCmdNatural, L"自然色彩");
+    AppendMenuW(menu, MF_STRING | (smartCharge ? MF_CHECKED : 0) |
+                          ((hasCharge && !m_chargeCommandPending) ? 0 : MF_GRAYED),
+                kCmdSmartCharge, L"智能充电");
+    AppendMenuW(menu, MF_STRING | (kbdWirelessOn ? MF_CHECKED : 0) | (kbdAvailable ? 0 : MF_GRAYED),
+                kCmdKbdWireless, L"键盘分离后保持无线连接");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kCmdExit, L"退出");
+
+    POINT point{};
+    GetCursorPos(&point);
+    SetForegroundWindow(hwnd);
+    const auto action = TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, hwnd, nullptr);
+    PostMessageW(hwnd, WM_NULL, 0, 0);
+    DestroyMenu(menu);
+
+    switch (action) {
+    case kCmdOpen:
+        ActivateWindow();
+        break;
+    case kCmdExit:
+        m_quitRequested = true;
+        Close();
+        break;
+    case kCmdEye:
+        if (ApplyMateBookDisplayColor(!eyeOn, CurrentColorTemperatureKelvin()) && m_mainUiInitialized) {
+            m_updatingControls = true;
+            EyeComfortToggle().IsOn(!eyeOn);
+            HomeEyeComfortToggle().IsOn(!eyeOn);
+            m_updatingControls = false;
+            RefreshHomeScreenSummary();
+        }
+        break;
+    case kCmdNatural:
+        if (m_naturalColor.Set(!ncOn) && m_mainUiInitialized) {
+            RefreshNaturalColor();
+        }
+        break;
+    case kCmdSmartCharge:
+        if (!m_chargeCommandPending) {
+            const bool nextSmart = !smartCharge;
+            const uint8_t targetPercent = nextSmart
+                ? 0
+                : static_cast<uint8_t>(Gaokun::Power::SnapChargeLimit(
+                      static_cast<int>(ReadUserSetting(L"ChargeLimit", 100))));
+            ApplyMateBookChargeLimitAsync(targetPercent);
+        }
+        break;
+    case kCmdKbdWireless:
+        if (m_accessories && m_accessories->SetDetachSupport(!kbdWirelessOn)) {
+            m_kbdDetachAwaitingEcho = true;
+            m_kbdDetachRequested = !kbdWirelessOn;
+            m_kbdDetachEchoDeadline = GetTickCount64() + 3000;
+            if (m_mainUiInitialized) {
+                m_updatingControls = true;
+                KeyboardWirelessToggle().IsOn(!kbdWirelessOn);
+                HomeKeyboardWirelessToggle().IsOn(!kbdWirelessOn);
+                m_updatingControls = false;
+                m_mainUiNeedsRender = true;
+            }
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+void MainWindow::OnPowerResume() {
+    if (!m_matebookE || m_closed) return;
+    const bool eye = m_mainUiInitialized
+        ? EyeComfortToggle().IsOn()
+        : (ReadUserSetting(L"EyeComfort", 0) != 0);
+    const int kelvin = CurrentColorTemperatureKelvin();
+    if (eye || kelvin > 0) {
+        (void)ApplyMateBookDisplayColor(eye, kelvin);
+    }
+    m_freqBinder.SyncNow();
+    const bool flyoutVisible = m_quickFlyoutWindow &&
+        get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow)->IsVisible();
+    const bool thermalVisible =
+        (IsMainUiVisible() && m_mainUiInitialized &&
+         BatteryPage().Visibility() == Visibility::Visible) ||
+        (flyoutVisible && (m_quickFlyoutMask & QuickFlyoutItems::kThermalRow) != 0);
+    PollMateBookHardware(thermalVisible);
+    RefreshTrayTooltip();
+}
+
+std::wstring MainWindow::BuildMateBookDiagnosticsReport() {
+    std::wstring out;
+    auto line = [&](const std::wstring& s) {
+        out += s;
+        out += L"\r\n";
+    };
+
+    const DeviceInfo::Info info = DeviceInfo::Query();
+    line(L"=== OpenE hub (MateBook E x64) 诊断报告 ===");
+    line(L"版本: " + std::wstring(CurrentVersionText().c_str()));
+    line(L"机型: " + info.manufacturer + L" " + info.family + L" (" + info.productName + L")");
+    line(L"BIOS: " + info.biosVersion + (info.biosDate.empty() ? L"" : (L" (" + info.biosDate + L")")));
+    line(L"系统: " + info.osName + L" " + info.osVersion);
+    line(L"处理器: " + info.processor);
+    line(L"");
+
+    PollMateBookHardware(false);
+    line(L"[硬件服务 OpenEHubHwService]");
+    line(std::wstring(L"服务运行中: ") + (MateBookHw::Client::IsServiceRunning() ? L"是" : L"否"));
+    line(std::wstring(L"共享内存已连接: ") + (m_hasHwSnapshot ? L"是" : L"否"));
+    if (m_hasHwSnapshot) {
+        line(L"风扇转速: " + (m_hwSnapshot.HasFan() ? (std::to_wstring(m_hwSnapshot.fanRpm) + L" RPM") : L"无读数"));
+        line(L"CPU 温度: " + (m_hwSnapshot.HasCpuTemp() ? (std::to_wstring(m_hwSnapshot.cpuTempC) + L" °C") : L"无读数"));
+        if (m_hwSnapshot.HasCharge()) {
+            line(std::wstring(L"EC 充电模式: ") + (m_hwSnapshot.ChargeManual() ? L"手动上限" : L"智能充电") +
+                 L" (mode=" + std::to_wstring(m_hwSnapshot.chargeMode) +
+                 L", " + std::to_wstring(m_hwSnapshot.chargeStartPercent) + L"%-" +
+                 std::to_wstring(m_hwSnapshot.chargeStopPercent) + L"%, delay=" +
+                 std::to_wstring(m_hwSnapshot.chargeDelayHours) + L"h)");
+        }
+    }
+    line(L"");
+
+    line(L"[电源模式与频率绑定]");
+    const auto overlay = PowerOverlay::Query();
+    const wchar_t* modeName =
+        overlay.mode == PowerOverlay::Mode::BestEfficiency ? L"最佳能效" :
+        overlay.mode == PowerOverlay::Mode::BestPerformance ? L"最佳性能" : L"平衡";
+    line(std::wstring(L"当前电源模式: ") + modeName +
+         (overlay.energySaverActive ? L"（节能模式已开启）" : L""));
+    line(L"频率绑定状态: " + m_freqBinder.DiagnosticsSummary());
+    line(L"");
+
+    line(L"[显示控制 OneControlApi]");
+    line(std::wstring(L"护眼模式: ") + (CurrentEyeComfortEnabled() ? L"开" : L"关"));
+    const int nc = m_naturalColor.Read();
+    line(std::wstring(L"自然色彩: ") + (nc == 1 ? L"开" : (nc == 0 ? L"关" : L"不可读")));
+    const int gamut = m_naturalColor.ReadGamut();
+    line(L"色域模式: " + std::to_wstring(gamut));
+    line(L"屏幕色温: " + std::to_wstring(CurrentColorTemperatureKelvin()) + L" K");
+    line(L"");
+
+    line(L"[配件状态]");
+    PenStatus::State acc{};
+    if (m_accessories) {
+        m_accessories->Read(acc);
+        line(std::wstring(L"手写笔宿主健康: ") + (acc.penHostHealthy ? L"是" : L"否") +
+             L", 连接=" + (acc.stylusLinked ? L"是" : L"否") +
+             L", 电量=" + (acc.hasBatteryLevel ? (std::to_wstring(acc.batteryLevel) + L"%") : L"未知") +
+             L", 充电=" + (acc.charging ? L"是" : L"否"));
+        line(std::wstring(L"键盘宿主健康: ") + (acc.kbdHostHealthy ? L"是" : L"否") +
+             L", 在位=" + (acc.kbdPresent ? L"是" : L"否") +
+             L", 分离=" + (acc.kbdDetached ? L"是" : L"否") +
+             L", 电量=" + (acc.hasKbdBattery ? (std::to_wstring(acc.kbdBatteryLevel) + L"%") : L"未知"));
+    } else {
+        line(L"配件宿主未初始化");
+    }
+    line(L"");
+
+    line(L"[华为后台服务]");
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (scm) {
+        for (const wchar_t* name : MateBookServices::names) {
+            SC_HANDLE svc = OpenServiceW(scm, name, SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS);
+            if (!svc) {
+                line(std::wstring(name) + L": 未安装");
+                continue;
+            }
+            SERVICE_STATUS st{};
+            QueryServiceStatus(svc, &st);
+            DWORD needed = 0;
+            QueryServiceConfigW(svc, nullptr, 0, &needed);
+            std::wstring startText = L"?";
+            if (needed > 0) {
+                std::vector<BYTE> buf(needed);
+                auto* cfg = reinterpret_cast<QUERY_SERVICE_CONFIGW*>(buf.data());
+                if (QueryServiceConfigW(svc, cfg, needed, &needed)) {
+                    startText = cfg->dwStartType == SERVICE_DISABLED ? L"Disabled"
+                              : cfg->dwStartType == SERVICE_AUTO_START ? L"Auto"
+                              : L"Manual";
+                }
+            }
+            const wchar_t* runText = st.dwCurrentState == SERVICE_RUNNING ? L"Running"
+                                   : st.dwCurrentState == SERVICE_STOPPED ? L"Stopped"
+                                   : L"Pending";
+            line(std::wstring(name) + L": " + startText + L" / " + runText);
+            CloseServiceHandle(svc);
+        }
+        CloseServiceHandle(scm);
+    }
+    return out;
+}
+#endif
+
+bool MainWindow::IsDeviceNotificationsEnabled() {
+    if (m_mainUiInitialized) return DeviceNotificationsToggle().IsOn();
+    return ReadUserSetting(L"DeviceNotifications", 1) != 0;
+}
+
+int MainWindow::CurrentColorTemperatureKelvin() {
+    if (m_mainUiInitialized) {
+        if (!ColorTemperatureToggle().IsOn()) return 0;
+        return static_cast<int>(std::lround(ColorTemperatureSlider().Value()));
+    }
+    const DWORD saved = ReadUserSetting(L"ColorTemperature", 0);
+    return (saved >= 2000 && saved <= 10000) ? static_cast<int>(saved) : 0;
+}
+
+bool MainWindow::CurrentEyeComfortEnabled() {
+    if (m_mainUiInitialized) return EyeComfortToggle().IsOn();
+    const int hw = m_naturalColor.ReadEyeComfort();
+    if (hw == 0 || hw == 1) return hw == 1;
+    return ReadUserSetting(L"EyeComfort", 0) != 0;
+}
+
+bool MainWindow::ApplyMateBookDisplayColor(bool eyeComfort, int kelvin) {
+    const int normalizedKelvin = (kelvin >= 2000 && kelvin <= 10000) ? kelvin : 0;
+    if (!m_naturalColor.ApplyEyeAndTemperature(eyeComfort, normalizedKelvin)) {
+        return false;
+    }
+    WriteUserSetting(L"EyeComfort", eyeComfort ? 1u : 0u);
+    WriteUserSetting(L"ColorTemperature", static_cast<DWORD>(normalizedKelvin));
+    if (normalizedKelvin > 0) m_lastColorTemperatureKelvin = normalizedKelvin;
+    return true;
 }
 
 LRESULT CALLBACK MainWindow::MainWndProc(
@@ -467,6 +1294,100 @@ LRESULT CALLBACK MainWindow::MainWndProc(
     const auto lifetime = self->get_strong();
     static const UINT taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     if (self->m_matebookE && message == taskbarCreated) self->RegisterTrayIcon();
+    if (self->m_trayIcon &&
+        (message == WM_SETTINGCHANGE || message == WM_DISPLAYCHANGE || message == WM_DPICHANGED)) {
+        self->RefreshTrayIconImage();
+    }
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (self->m_matebookE && message == WM_ENDSESSION && wParam != 0) {
+        self->m_freqBinder.StopAndRestore();
+    }
+    if (self->m_matebookE && message == kMsgPowerModeChanged) {
+        try {
+            self->DispatcherQueue().TryEnqueue([weak = self->get_weak()]() {
+                if (const auto strong = weak.get(); strong && !strong->m_closed) {
+                    if (strong->m_mainUiInitialized) strong->RefreshPowerModeControl();
+                    if (strong->m_quickFlyoutWindow &&
+                        get_self<implementation::QuickFlyoutWindow>(strong->m_quickFlyoutWindow)->IsVisible()) {
+                        strong->RefreshBatteryLive();
+                    }
+                }
+            });
+        } catch (...) {
+        }
+        return 0;
+    }
+    if (self->m_matebookE && message == kMsgAccessoryChanged) {
+        try {
+            self->DispatcherQueue().TryEnqueue([weak = self->get_weak()]() {
+                if (const auto strong = weak.get(); strong && !strong->m_closed) {
+                    strong->RefreshState();
+                }
+            });
+        } catch (...) {
+        }
+        return 0;
+    }
+    if (self->m_matebookE && message == WM_DEVICECHANGE &&
+        (wParam == DBT_DEVICEARRIVAL || wParam == DBT_DEVICEREMOVECOMPLETE ||
+         wParam == DBT_DEVNODES_CHANGED)) {
+        try {
+            self->DispatcherQueue().TryEnqueue([weak = self->get_weak()]() {
+                if (const auto strong = weak.get(); strong && !strong->m_closed && strong->m_accessories) {
+                    strong->m_accessories->InvalidateUsbCache();
+                    strong->RefreshState();
+                }
+            });
+        } catch (...) {
+        }
+    }
+    if (self->m_matebookE && message == WM_TIMER && wParam == kTrayHoverTimerId) {
+        KillTimer(hwnd, kTrayHoverTimerId);
+        self->m_trayHoverArmed = false;
+        POINT cursor{};
+        if (GetCursorPos(&cursor)) {
+            bool hovering = false;
+            NOTIFYICONIDENTIFIER identifier{};
+            identifier.cbSize = sizeof(identifier);
+            identifier.hWnd = hwnd;
+            identifier.uID = 1;
+            RECT iconRect{};
+            if (SUCCEEDED(Shell_NotifyIconGetRect(&identifier, &iconRect)) &&
+                iconRect.right > iconRect.left && iconRect.bottom > iconRect.top) {
+                InflateRect(&iconRect, 4, 4);
+                hovering = PtInRect(&iconRect, cursor) != FALSE;
+            } else {
+                const int dx = cursor.x - self->m_trayHoverPoint.x;
+                const int dy = cursor.y - self->m_trayHoverPoint.y;
+                hovering = (dx * dx + dy * dy) <= (24 * 24);
+            }
+            if (hovering) {
+                const ULONGLONG now = GetTickCount64();
+                if (now - self->m_lastTrayHoverTick >= 2000) {
+                    self->m_lastTrayHoverTick = now;
+                    self->PollMateBookHardware(true);
+                }
+            }
+        }
+        return 0;
+    }
+    if (self->m_matebookE && message == WM_POWERBROADCAST &&
+        wParam == PBT_APMPOWERSTATUSCHANGE) {
+        self->m_freqBinder.SyncNow();
+        (void)PostMessageW(hwnd, kMsgPowerModeChanged, 0, 0);
+    }
+    if (self->m_matebookE && message == WM_POWERBROADCAST &&
+        (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND)) {
+        try {
+            self->DispatcherQueue().TryEnqueue([weak = self->get_weak()]() {
+                if (const auto strong = weak.get(); strong && !strong->m_closed) {
+                    strong->OnPowerResume();
+                }
+            });
+        } catch (...) {
+        }
+    }
+#endif
     if (self->m_matebookE && message == WM_APP + 253) {
         if (!wParam && lParam >= 0) self->FanSpeed().Text(to_hstring(static_cast<int64_t>(lParam)) + L" RPM");
         else self->FanSpeed().Text(wParam == 1 ? L"需要读取权限" : L"暂无读数");
@@ -474,8 +1395,58 @@ LRESULT CALLBACK MainWindow::MainWndProc(
         return 0;
     }
     if (self->m_trayIcon && message == WM_APP + 252 && wParam == 1) {
-        if (lParam == WM_LBUTTONUP) self->ActivateWindow();
-        if (lParam == WM_RBUTTONUP) {
+        const UINT event = LOWORD(lParam);
+        if (event == WM_MOUSEMOVE) {
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+            if (self->m_matebookE) {
+                GetCursorPos(&self->m_trayHoverPoint);
+                if (!self->m_trayHoverArmed) {
+                    self->m_trayHoverArmed = SetTimer(hwnd, kTrayHoverTimerId, 300, nullptr) != 0;
+                }
+            }
+#endif
+            return 0;
+        }
+        if (event == WM_LBUTTONUP) {
+            POINT point{};
+            bool hasAnchor = GetCursorPos(&point) != FALSE;
+            if (!hasAnchor) {
+                NOTIFYICONIDENTIFIER identifier{};
+                identifier.cbSize = sizeof(identifier);
+                identifier.hWnd = hwnd;
+                identifier.uID = 1;
+                RECT iconRect{};
+                if (SUCCEEDED(Shell_NotifyIconGetRect(&identifier, &iconRect)) &&
+                    iconRect.right > iconRect.left && iconRect.bottom > iconRect.top) {
+                    point.x = iconRect.left + (iconRect.right - iconRect.left) / 2;
+                    point.y = iconRect.top + (iconRect.bottom - iconRect.top) / 2;
+                    hasAnchor = true;
+                }
+            }
+            try {
+                self->DispatcherQueue().TryEnqueue(
+                    [weak = self->get_weak(), hasAnchor, x = static_cast<int>(point.x),
+                     y = static_cast<int>(point.y)]() {
+                        try {
+                            if (const auto strong = weak.get(); strong && !strong->m_closed) {
+                                strong->ToggleQuickFlyout(hasAnchor, x, y);
+                            }
+                        } catch (...) {
+                        }
+                    });
+            } catch (...) {
+            }
+        } else if (event == WM_RBUTTONUP) {
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+            if (self->m_matebookE) {
+                self->ShowMateBookTrayMenu(hwnd);
+                return 0;
+            }
+#endif
+            if (self->m_quickFlyoutWindow) {
+                auto* flyout = get_self<implementation::QuickFlyoutWindow>(self->m_quickFlyoutWindow);
+                if (flyout->IsVisible()) flyout->HideFlyout();
+            }
             HMENU menu = CreatePopupMenu();
             if (menu) {
                 AppendMenuW(menu, MF_STRING, 1, L"打开 OpenE hub");
@@ -484,6 +1455,7 @@ LRESULT CALLBACK MainWindow::MainWndProc(
                 GetCursorPos(&point);
                 SetForegroundWindow(hwnd);
                 const auto action = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, hwnd, nullptr);
+                PostMessageW(hwnd, WM_NULL, 0, 0);
                 DestroyMenu(menu);
                 if (action == 1) self->ActivateWindow();
                 if (action == 2) { self->m_quitRequested = true; self->Close(); }
@@ -522,12 +1494,43 @@ void MainWindow::UpdateRefreshPolicy() {
         HomePage().Visibility() == Visibility::Visible;
     const bool batteryPageVisible = mainVisible && m_mainUiInitialized &&
         BatteryPage().Visibility() == Visibility::Visible;
-    if (m_matebookE) {
-        if (batteryPageVisible) {
-            SetPropW(WindowHandle(), L"OpenEHub.ReadFan", reinterpret_cast<HANDLE>(1));
-            if (!m_fanStarted) StartFanReader(false);
-        } else RemovePropW(WindowHandle(), L"OpenEHub.ReadFan");
+
+    if (mainVisible && !SystemBackdrop()) {
+        try {
+            DispatcherQueue().TryEnqueue([weak = get_weak()]() {
+                if (const auto strong = weak.get();
+                    strong && !strong->m_closed && strong->IsMainUiVisible() && !strong->SystemBackdrop()) {
+                    strong->SystemBackdrop(Microsoft::UI::Xaml::Media::MicaBackdrop{});
+                }
+            });
+        } catch (...) {
+        }
+    } else if (!mainVisible && m_mainUiVisible && SystemBackdrop()) {
+        try {
+            DispatcherQueue().TryEnqueue([weak = get_weak()]() {
+                if (const auto strong = weak.get();
+                    strong && !strong->m_closed && !strong->IsMainUiVisible() && strong->SystemBackdrop()) {
+                    strong->SystemBackdrop(nullptr);
+                }
+            });
+        } catch (...) {
+        }
     }
+
+    const bool anyUiVisible = mainVisible || quickFlyoutVisible || notifyNeedsRefresh;
+    if (anyUiVisible) {
+        m_idleMemoryTrimmed = false;
+    }
+
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) {
+        const bool thermalVisible = batteryPageVisible ||
+            (quickFlyoutVisible && (m_quickFlyoutMask & QuickFlyoutItems::kThermalRow) != 0);
+        if (thermalVisible) {
+            PollMateBookHardware(true);
+        }
+    }
+#endif
     const bool needLiveBattery = batteryPageVisible || homeVisible || quickFlyoutVisible;
     const bool becameVisible = mainVisible && !m_mainUiVisible;
     const bool liveBatteryBecameActive = needLiveBattery && !m_liveBatteryActive;
@@ -536,7 +1539,20 @@ void MainWindow::UpdateRefreshPolicy() {
     m_mainUiVisible = mainVisible;
     m_liveBatteryActive = needLiveBattery;
 
-    if (mainVisible || notifyNeedsRefresh || quickFlyoutVisible) {
+    bool backgroundAccessoryFallback = false;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    // 配件宿主与 HID 插拔已走内核事件驱动；仅在事件注册意外失败时才退回 1 秒轮询。
+    backgroundAccessoryFallback =
+        m_matebookE && m_trayIcon && IsDeviceNotificationsEnabled() &&
+        (!m_accessoryNotifyWait || !m_hidDevNotify);
+#endif
+    if (anyUiVisible) {
+        const int64_t intervalTicks =
+            m_matebookE ? (notifyNeedsRefresh ? 2'500'000 : 5'000'000) : 1'000'000;
+        m_refreshTimer.Interval(Windows::Foundation::TimeSpan{intervalTicks});
+        if (!m_refreshTimer.IsEnabled()) m_refreshTimer.Start();
+    } else if (backgroundAccessoryFallback) {
+        m_refreshTimer.Interval(Windows::Foundation::TimeSpan{10'000'000}); // 1 s fallback
         if (!m_refreshTimer.IsEnabled()) m_refreshTimer.Start();
     } else {
         m_refreshTimer.Stop();
@@ -553,6 +1569,11 @@ void MainWindow::UpdateRefreshPolicy() {
     }
     if (liveBatteryBecameActive && !m_closed) {
         RefreshBatteryLive();
+    }
+    if (!anyUiVisible && !m_idleMemoryTrimmed) {
+        m_idleMemoryTrimmed = true;
+        (void)SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1),
+                                       static_cast<SIZE_T>(-1));
     }
 }
 
@@ -770,10 +1791,12 @@ LRESULT CALLBACK MainWindow::BridgeWndProc(
                 dispatch([lifecycle](MainWindow& mw) {
                     switch (lifecycle) {
                     case EGoTouchTrayIpc::SettingsLifecycle::InstallStarted:
+                        mw.m_quitRequested = true;
                         mw.Close();
                         break;
                     case EGoTouchTrayIpc::SettingsLifecycle::SafeExitCompleted:
                         mw.m_exitPending = false;
+                        mw.m_quitRequested = true;
                         mw.Close();
                         break;
                     case EGoTouchTrayIpc::SettingsLifecycle::SafeExitFailed:
@@ -840,6 +1863,10 @@ void MainWindow::ShowNotification(EGoTouchTrayIpc::Notification notification, LP
 }
 
 void MainWindow::ActivateWindow() {
+    if (m_closed) return;
+    if (!SystemBackdrop()) {
+        SystemBackdrop(Microsoft::UI::Xaml::Media::MicaBackdrop{});
+    }
     if (m_quickFlyoutWindow) {
         auto* flyout = get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow);
         if (flyout->IsVisible()) {
@@ -868,10 +1895,63 @@ QuickFlyoutState MainWindow::BuildQuickFlyoutState() {
     m_trayConnected = !m_matebookE && FindTrayWindow() != nullptr;
     s.trayConnected = m_trayConnected;
 
-    if (!m_reader.IsOpen()) m_reader.Open();
-    if (m_reader.IsOpen()) {
-        s.hasState = m_reader.Read(s.status);
-        if (!s.hasState) m_reader.Close();
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) {
+        const bool thermalEnabled = (m_quickFlyoutMask & QuickFlyoutItems::kThermalRow) != 0;
+        PollMateBookHardware(thermalEnabled);
+        s.hideTouchTile = true;
+        s.thermalSupported = true;
+        const ULONGLONG now = GetTickCount64();
+        if (m_lastFlyoutQueryTick == 0 || now - m_lastFlyoutQueryTick >= 2000) {
+            m_lastFlyoutQueryTick = now;
+            m_cachedNaturalColor = m_naturalColor.Read();
+        }
+        s.batteryProfileSupported = false;
+        s.powerFreqBound = m_freqBinder.IsBound();
+        s.hasFanRpm = m_hasHwSnapshot && m_hwSnapshot.HasFan();
+        s.fanRpm = m_hwSnapshot.fanRpm;
+        s.hasCpuTemp = m_hasHwSnapshot && m_hwSnapshot.HasCpuTemp();
+        s.cpuTempC = m_hwSnapshot.cpuTempC;
+        s.canAuthorizeHw = !m_hasHwSnapshot && !m_hwInstallPending;
+
+        const bool displayOk = m_naturalColor.IsDisplayControlAvailable();
+        s.eyeComfortAvailable = displayOk;
+        s.colorTempAvailable = displayOk;
+
+        const int nc = m_cachedNaturalColor;
+        s.naturalColorSupported = true;
+        s.naturalColorAvailable = (nc == 0 || nc == 1);
+        s.naturalColor = (nc == 1);
+
+        s.smartChargeAvailable = !m_chargeCommandPending;
+
+        s.status.hasHostHealth = true;
+        if (m_accessories) m_accessories->Read(s.status);
+        s.hasState = true;
+        s.kbdWirelessAvailable =
+            s.status.hasKbdPresent && s.status.kbdPresent && s.status.hasKbdDetachSupport;
+
+        if (m_hasHwSnapshot && m_hwSnapshot.HasCharge()) {
+            s.status.hasChargeLimit = true;
+            s.status.chargeLimitManual = m_hwSnapshot.ChargeManual();
+            s.status.chargeLimit = m_hwSnapshot.chargeStopPercent;
+        } else {
+            bool manual = false;
+            uint8_t cap = 100;
+            if (MateBookHw::Client::ReadVendorChargeFallback(manual, cap)) {
+                s.status.hasChargeLimit = true;
+                s.status.chargeLimitManual = manual;
+                s.status.chargeLimit = cap;
+            }
+        }
+    } else
+#endif
+    {
+        if (!m_reader.IsOpen()) m_reader.Open();
+        if (m_reader.IsOpen()) {
+            s.hasState = m_reader.Read(s.status);
+            if (!s.hasState) m_reader.Close();
+        }
     }
 
     if (m_providerAwaitingEcho) {
@@ -883,7 +1963,11 @@ QuickFlyoutState MainWindow::BuildQuickFlyoutState() {
             s.status.touchProvider == PenStatus::TouchProviderState::SwitchingToEGo;
     }
 
-    s.eyeComfort = ReadUserSetting(L"EyeComfort", 0) != 0;
+    if (m_matebookE) {
+        s.eyeComfort = CurrentEyeComfortEnabled();
+    } else {
+        s.eyeComfort = ReadUserSetting(L"EyeComfort", 0) != 0;
+    }
 
     const DWORD kelvin = ReadUserSetting(L"ColorTemperature", 0);
     if (kelvin >= 2000 && kelvin <= 10000) {
@@ -915,7 +1999,10 @@ QuickFlyoutState MainWindow::BuildQuickFlyoutState() {
         (Gaokun::Power::ReadLiveState(s.hostPower) == Gaokun::Power::Result::Ok &&
          s.hostPower.batteryPresent);
     s.powerOverlay = PowerOverlay::Query();
-    const DWORD savedMask = ReadUserSetting(L"QuickFlyoutItems", QuickFlyoutItems::kDefaultMask);
+    const DWORD defaultMask = m_matebookE
+        ? QuickFlyoutItems::kMateBookEDefaultMask
+        : QuickFlyoutItems::kDefaultMask;
+    const DWORD savedMask = ReadUserSetting(L"QuickFlyoutItems", defaultMask);
     if (savedMask & QuickFlyoutItems::kConfiguredBit) {
         uint32_t migratedMask = static_cast<uint32_t>(savedMask);
         if ((migratedMask & QuickFlyoutItems::kSmartChargeDefaultMigratedBit) == 0) {
@@ -926,10 +2013,26 @@ QuickFlyoutState MainWindow::BuildQuickFlyoutState() {
             migratedMask |= QuickFlyoutItems::kSmartChargeDefaultMigratedBit;
             WriteUserSetting(L"QuickFlyoutItems", migratedMask);
         }
+        if (m_matebookE && (migratedMask & QuickFlyoutItems::kMateBookEDefaultMigratedBit) == 0) {
+            migratedMask &= ~QuickFlyoutItems::kTouchTile;
+            migratedMask |= QuickFlyoutItems::kNaturalColorTile |
+                            QuickFlyoutItems::kBatteryProfileRow |
+                            QuickFlyoutItems::kThermalRow |
+                            QuickFlyoutItems::kMateBookEDefaultMigratedBit |
+                            QuickFlyoutItems::kBatteryProfileMigratedBit;
+            WriteUserSetting(L"QuickFlyoutItems", migratedMask);
+        } else if (m_matebookE && (migratedMask & QuickFlyoutItems::kBatteryProfileMigratedBit) == 0) {
+            migratedMask |= QuickFlyoutItems::kBatteryProfileRow |
+                            QuickFlyoutItems::kBatteryProfileMigratedBit;
+            WriteUserSetting(L"QuickFlyoutItems", migratedMask);
+        }
         s.itemsMask = migratedMask;
     } else {
-        s.itemsMask = QuickFlyoutItems::kDefaultMask;
+        s.itemsMask = defaultMask;
     }
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    m_quickFlyoutMask = s.itemsMask;
+#endif
     return s;
 }
 
@@ -964,7 +2067,13 @@ void MainWindow::ToggleQuickFlyout(bool hasAnchor, int anchorX, int anchorY) {
             return true;
         };
         callbacks.setEyeComfort = [this](bool enabled) {
-            if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetEyeComfort, enabled)) {
+            bool ok = false;
+            if (m_matebookE) {
+                ok = ApplyMateBookDisplayColor(enabled, CurrentColorTemperatureKelvin());
+            } else {
+                ok = SendTrayCommand(EGoTouchTrayIpc::Command::SetEyeComfort, enabled);
+            }
+            if (!ok) {
                 return false;
             }
             if (m_mainUiInitialized) {
@@ -976,8 +2085,28 @@ void MainWindow::ToggleQuickFlyout(bool hasAnchor, int anchorX, int anchorY) {
             }
             return true;
         };
+        callbacks.setNaturalColor = [this](bool enabled) {
+            if (!m_matebookE) return false;
+            if (!m_naturalColor.Set(enabled)) return false;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+            InvalidateFlyoutHardwareCache();
+#endif
+            if (m_mainUiInitialized) {
+                RefreshNaturalColor();
+            }
+            return true;
+        };
         callbacks.setKeyboardWireless = [this](bool enabled) {
-            if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetKeyboardWirelessOnDetach, enabled)) {
+            bool sent = false;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+            if (m_matebookE) {
+                sent = m_accessories && m_accessories->SetDetachSupport(enabled);
+            } else
+#endif
+            {
+                sent = SendTrayCommand(EGoTouchTrayIpc::Command::SetKeyboardWirelessOnDetach, enabled);
+            }
+            if (!sent) {
                 return false;
             }
             m_kbdDetachAwaitingEcho = true;
@@ -993,8 +2122,14 @@ void MainWindow::ToggleQuickFlyout(bool hasAnchor, int anchorX, int anchorY) {
             return true;
         };
         callbacks.setColorTemperature = [this](int kelvin) {
-            if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetColorTemperature,
-                                 static_cast<LPARAM>(kelvin))) {
+            bool ok = false;
+            if (m_matebookE) {
+                ok = ApplyMateBookDisplayColor(CurrentEyeComfortEnabled(), kelvin);
+            } else {
+                ok = SendTrayCommand(EGoTouchTrayIpc::Command::SetColorTemperature,
+                                     static_cast<LPARAM>(kelvin));
+            }
+            if (!ok) {
                 return false;
             }
             const bool enabled = kelvin >= 2000 && kelvin <= 10000;
@@ -1008,7 +2143,8 @@ void MainWindow::ToggleQuickFlyout(bool hasAnchor, int anchorX, int anchorY) {
                     ColorTemperatureSlider().Value(static_cast<double>(kelvin));
                 }
                 m_updatingControls = false;
-                const bool usable = enabled && m_trayConnected && !m_exitPending;
+                const bool displayOk = m_trayConnected || (m_matebookE && m_naturalColor.IsDisplayControlAvailable());
+                const bool usable = enabled && displayOk && !m_exitPending;
                 ColorTemperatureSliderRow().Visibility(
                     enabled ? Visibility::Visible : Visibility::Collapsed);
                 ColorTemperatureSlider().IsEnabled(usable);
@@ -1027,6 +2163,25 @@ void MainWindow::ToggleQuickFlyout(bool hasAnchor, int anchorX, int anchorY) {
                 ? 0
                 : static_cast<uint8_t>(Gaokun::Power::SnapChargeLimit(
                       static_cast<int>(ReadUserSetting(L"ChargeLimit", 100))));
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+            if (m_matebookE) {
+                if (m_chargeCommandPending) return false;
+                ApplyMateBookChargeLimitAsync(targetPercent);
+                if (m_mainUiInitialized) {
+                    m_updatingControls = true;
+                    SmartChargeToggle().IsOn(smart);
+                    if (!smart) {
+                        ChargeLimitSlider().Value(static_cast<double>(targetPercent));
+                        ChargeLimitValueText().Text(
+                            winrt::to_hstring(static_cast<int>(targetPercent)) + L"%");
+                    }
+                    m_updatingControls = false;
+                    UpdateChargeLimitControls(smart);
+                    m_mainUiNeedsRender = true;
+                }
+                return true;
+            }
+#endif
             if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetChargeLimit,
                                  static_cast<LPARAM>(targetPercent))) {
                 return false;
@@ -1046,21 +2201,50 @@ void MainWindow::ToggleQuickFlyout(bool hasAnchor, int anchorX, int anchorY) {
             }
             return true;
         };
+        callbacks.authorizeHardware = [this]() {
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+            if (m_matebookE) InstallHardwareServiceAsync();
+#endif
+        };
         callbacks.setPowerMode = [this](PowerOverlay::Mode mode) {
             if (!PowerOverlay::Apply(mode)) return false;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+            if (m_matebookE) m_freqBinder.SyncNow();
+#endif
             if (m_mainUiInitialized) RefreshPowerModeControl();
             return true;
         };
+        callbacks.setBatteryProfile = [this](MateBookBatteryProfile::Profile profile) {
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+            if (!m_matebookE) return false;
+            if (!MateBookBatteryProfile::Apply(profile)) return false;
+            InvalidateFlyoutHardwareCache();
+            if (m_mainUiInitialized) RefreshPowerModeControl();
+            return true;
+#else
+            (void)profile;
+            return false;
+#endif
+        };
         callbacks.setEnergySaver = [this](bool enabled) {
             if (!PowerOverlay::SetEnergySaverActive(enabled)) return false;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+            if (m_matebookE) m_freqBinder.SyncNow();
+#endif
             if (m_mainUiInitialized) RefreshPowerModeControl();
             return true;
         };
         callbacks.saveItemsMask = [this](uint32_t mask) {
-            WriteUserSetting(
-                L"QuickFlyoutItems",
-                mask | QuickFlyoutItems::kConfiguredBit |
-                    QuickFlyoutItems::kSmartChargeDefaultMigratedBit);
+            uint32_t persisted = mask | QuickFlyoutItems::kConfiguredBit |
+                                 QuickFlyoutItems::kSmartChargeDefaultMigratedBit;
+            if (m_matebookE) {
+                persisted |= QuickFlyoutItems::kMateBookEDefaultMigratedBit |
+                             QuickFlyoutItems::kBatteryProfileMigratedBit;
+            }
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+            m_quickFlyoutMask = persisted;
+#endif
+            WriteUserSetting(L"QuickFlyoutItems", persisted);
         };
         callbacks.openSettings = [this]() { ActivateWindow(); };
         callbacks.onVisibilityChanged = [this]() { UpdateRefreshPolicy(); };
@@ -1069,6 +2253,9 @@ void MainWindow::ToggleQuickFlyout(bool hasAnchor, int anchorX, int anchorY) {
     }
 
     auto flyout = get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow);
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (!flyout->IsVisible()) InvalidateFlyoutHardwareCache();
+#endif
     flyout->ApplyTheme(RootLayout().RequestedTheme());
     flyout->ToggleAt(hasAnchor, anchorX, anchorY);
 }
@@ -1208,12 +2395,14 @@ void MainWindow::FillDevicePage() {
         m_matebookE = true;
         FanLabel().Visibility(Visibility::Visible);
         FanRow().Visibility(Visibility::Visible);
-        BatteryProfileCard().Visibility(Visibility::Visible);
+        CpuTempLabel().Visibility(Visibility::Visible);
+        CpuTempText().Visibility(Visibility::Visible);
+        BatteryProfileCard().Visibility(Visibility::Collapsed);
         NaturalColorRow().Visibility(Visibility::Visible);
         HuaweiDisplayRow().Visibility(Visibility::Visible);
         HomeTouchRow().Visibility(Visibility::Collapsed);
         TouchServiceRow().Visibility(Visibility::Collapsed);
-        LoginStartupDescription().Text(L"登录 Windows 后打开 OpenE hub。");
+        LoginStartupDescription().Text(L"登录 Windows 后在托盘静默运行 OpenE hub。");
         ExitActionTitle().Text(L"退出 OpenE hub");
         ExitActionDescription().Text(L"关闭窗口并结束配件监测。");
         AutoUpdateRow().Visibility(Visibility::Collapsed);
@@ -1222,12 +2411,19 @@ void MainWindow::FillDevicePage() {
         m_updatingControls = true;
         AutoStartToggle().IsOn(RegGetValueW(HKEY_CURRENT_USER, kWindowsRunKey, L"openehub",
                                              RRF_RT_REG_SZ, nullptr, nullptr, &startupSize) == ERROR_SUCCESS);
+        const int hwEye = m_naturalColor.ReadEyeComfort();
+        if (hwEye == 0 || hwEye == 1) {
+            EyeComfortToggle().IsOn(hwEye == 1);
+            HomeEyeComfortToggle().IsOn(hwEye == 1);
+            WriteUserSetting(L"EyeComfort", static_cast<DWORD>(hwEye));
+        }
         m_updatingControls = previous;
         HomePenModeRow().Visibility(Visibility::Collapsed);
         PenModeRow().Visibility(Visibility::Collapsed);
         OneNoteCompatibilityRow().Visibility(Visibility::Collapsed);
         WindowsPenRow().Visibility(Visibility::Visible);
-        StartAccessories();
+        if (!m_accessoriesStarted) StartAccessories();
+        PollMateBookHardware(false);
     }
 #endif
 
@@ -1430,6 +2626,15 @@ void MainWindow::RefreshBatteryLive() {
         get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow)->IsVisible();
     if (!updateMainUi && !updateFlyout) return;
 
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) {
+        const bool thermalVisible =
+            (updateMainUi && BatteryPage().Visibility() == Visibility::Visible) ||
+            (updateFlyout && (m_quickFlyoutMask & QuickFlyoutItems::kThermalRow) != 0);
+        PollMateBookHardware(thermalVisible);
+    }
+#endif
+
     Gaokun::Power::LiveState live{};
     const auto result = Gaokun::Power::ReadLiveState(live);
     if (updateMainUi) {
@@ -1532,7 +2737,7 @@ void MainWindow::RefreshBatteryLive() {
                     m_smoothedKind = kind;
                     m_smoothedValid = true;
                 } else {
-                    constexpr double kAlpha = 0.1;
+                    const double kAlpha = m_matebookE ? 0.2 : 0.1;
                     m_smoothedSeconds = kAlpha * static_cast<double>(seconds) +
                                         (1.0 - kAlpha) * m_smoothedSeconds;
                 }
@@ -1699,6 +2904,8 @@ void MainWindow::SyncFrameTheme() {
 
 #if defined(_M_X64) && !defined(_M_ARM64EC)
 fire_and_forget MainWindow::StartAccessories() {
+    if (m_accessoriesStarted) co_return;
+    m_accessoriesStarted = true;
     auto lifetime = get_strong();
     apartment_context ui;
     std::unique_ptr<MateBookAccessories> accessories;
@@ -1710,6 +2917,9 @@ fire_and_forget MainWindow::StartAccessories() {
     co_await ui;
     if (m_closed) co_return;
     m_accessories = std::move(accessories);
+    if (m_accessories) {
+        m_accessories->SetUsbEventDriven(m_hidDevNotify != nullptr);
+    }
     m_mainUiNeedsRender = true;
     RefreshState();
 }
@@ -1722,7 +2932,7 @@ void MainWindow::WindowsPenClicked(IInspectable const&, RoutedEventArgs const&) 
 void MainWindow::HuaweiDisplayClicked(IInspectable const&, RoutedEventArgs const&) {
     PWSTR folder{};
     if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, nullptr, &folder))) return;
-    const auto directory = std::filesystem::path(folder) / L"Huawei/HwLcdEnhancement";
+    const auto directory = std::filesystem::path(folder) / L"Huawei" / L"HwLcdEnhancement";
     CoTaskMemFree(folder);
     const auto app = directory / L"MonitorManageStart.exe";
     if (reinterpret_cast<INT_PTR>(ShellExecuteW(WindowHandle(), L"open", app.c_str(), nullptr, directory.c_str(), SW_SHOWNORMAL)) <= 32)
@@ -1796,40 +3006,34 @@ fire_and_forget MainWindow::BatteryProfileClicked(IInspectable const& sender, Ro
     if (!m_uiReady || m_profilePending || BatteryProfileCard().Visibility() != Visibility::Visible) co_return;
     const auto action = unbox_value<hstring>(sender.as<FrameworkElement>().Tag());
     if (action != L"Quiet" && action != L"Daily" && action != L"Performance" && action != L"Restore") co_return;
-    auto lifetime = get_strong();
-    apartment_context ui;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
     m_profilePending = true;
     BatteryProfileCard().IsHitTestVisible(false);
-    BatteryProfileStatus().Text(L"正在应用电池设置…");
     bool applied = false;
-    try {
-        wchar_t module[32768]{}, system[MAX_PATH]{};
-        const auto size = GetModuleFileNameW(nullptr, module, static_cast<DWORD>(std::size(module)));
-        const auto systemSize = GetSystemDirectoryW(system, MAX_PATH);
-        if (size && size < std::size(module) && systemSize && systemSize < MAX_PATH) {
-            const auto script = std::filesystem::path(module).parent_path() / L"scripts" / L"OpenE-Hub.ps1";
-            const auto shell = std::filesystem::path(system) / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
-            auto command = L"\"" + shell.wstring() +
-                L"\" -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File \"" +
-                script.wstring() + L"\" -PolicyOnly -Action " + action.c_str();
-            STARTUPINFOW startup{sizeof(STARTUPINFOW)};
-            PROCESS_INFORMATION process{};
-            if (CreateProcessW(shell.c_str(), command.data(), nullptr, nullptr, FALSE,
-                               CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
-                CloseHandle(process.hThread);
-                winrt::handle worker{process.hProcess};
-                co_await winrt::resume_on_signal(worker.get());
-                DWORD exitCode{};
-                applied = GetExitCodeProcess(worker.get(), &exitCode) && exitCode == 0;
-            }
-        }
-    } catch (...) { applied = false; }
-    co_await ui;
+    if (action == L"Quiet") applied = MateBookBatteryProfile::Apply(MateBookBatteryProfile::Profile::Quiet);
+    else if (action == L"Daily") applied = MateBookBatteryProfile::Apply(MateBookBatteryProfile::Profile::Daily);
+    else if (action == L"Performance") applied = MateBookBatteryProfile::Apply(MateBookBatteryProfile::Profile::Performance);
+    else if (action == L"Restore") applied = MateBookBatteryProfile::Restore();
     m_profilePending = false;
-    if (m_closed) co_return;
     BatteryProfileCard().IsHitTestVisible(true);
+    InvalidateFlyoutHardwareCache();
     RefreshPowerModeControl();
-    if (!applied) ShowError(L"电池设置未完成", L"请检查程序目录中的 scripts 文件夹；若在其他位置更改过电源设置，可先点击恢复。");
+    if (m_quickFlyoutWindow &&
+        get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow)->IsVisible()) {
+        get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow)
+            ->UpdateState(BuildQuickFlyoutState());
+    }
+    if (!applied) {
+        ShowError(
+            L"电池设置未完成",
+            action == L"Restore"
+                ? L"请检查此前的电池设置备份及对应电源计划。"
+                : L"请检查当前电源计划。如已切换计划，请先恢复此前设置。");
+    }
+    co_return;
+#else
+    co_return;
+#endif
 }
 
 void MainWindow::RefreshPowerModeControl() {
@@ -1837,31 +3041,33 @@ void MainWindow::RefreshPowerModeControl() {
     const auto es = PowerOverlay::QueryEnergySaver();
     const auto overlay = PowerOverlay::Query();
     if (!m_profilePending && BatteryProfileCard().Visibility() == Visibility::Visible) {
-        const auto& api = PowerOverlay::detail::Api::Instance();
-        constexpr GUID processor{0x54533251,0x82be,0x4824,{0x96,0xc1,0x47,0xb6,0x0b,0x74,0x0d,0x00}};
-        constexpr GUID boost{0xbe337238,0x0d82,0x4146,{0xa9,0x60,0x4f,0x37,0x49,0xd4,0x70,0xc7}};
-        GUID* scheme = nullptr;
-        GUID mode{};
-        DWORD index{};
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+        const auto profileStatus = MateBookBatteryProfile::Query();
         const wchar_t* label = L"选择档位";
         const wchar_t* status = L"无法读取当前电池档位";
-        if (api.getActiveScheme && api.getActiveScheme(nullptr, &scheme) == ERROR_SUCCESS && scheme) {
-            if (api.readDcValue && api.getUserDc &&
-                api.readDcValue(nullptr, scheme, &processor, &boost, &index) == ERROR_SUCCESS &&
-                api.getUserDc(&mode) == ERROR_SUCCESS) {
+        if (profileStatus.supported) {
+            switch (profileStatus.profile) {
+            case MateBookBatteryProfile::Profile::Quiet:
+                label = L"静音";
+                status = L"最佳能效，保留睿频。封装功耗由固件管理。";
+                break;
+            case MateBookBatteryProfile::Profile::Daily:
+                label = L"日常";
+                status = L"平衡模式，保留睿频。封装功耗由固件管理。";
+                break;
+            case MateBookBatteryProfile::Profile::Performance:
+                label = L"性能";
+                status = L"最佳性能，保留睿频和固件动态功耗控制。";
+                break;
+            default:
                 label = L"自定义";
                 status = L"当前电源设置与三个预设档位不同。";
-                if (IsEqualGUID(mode, PowerOverlay::detail::kBestEfficiencyGuid)) {
-                    if (index == 0) { label = L"静音"; status = L"使用电池时关闭睿频，优先降低功耗。"; }
-                    if (index == 1) { label = L"日常"; status = L"使用电池时优先能效，保留睿频。"; }
-                } else if (index == 2 && IsEqualGUID(mode, PowerOverlay::detail::kBestPerformanceGuid)) {
-                    label = L"性能"; status = L"使用电池时优先性能，允许积极睿频。";
-                }
+                break;
             }
-            LocalFree(scheme);
         }
         ProfileMenu().Content(box_value(hstring{label}));
         BatteryProfileStatus().Text(status);
+#endif
     }
     const bool wasUpdating = m_updatingControls;
     m_updatingControls = true;
@@ -1889,9 +3095,16 @@ void MainWindow::RefreshPowerModeControl() {
         PowerModeCombo().SelectedIndex(idx);
         const bool saverOn = overlay.energySaverActive || es.active;
         PowerModeCombo().IsEnabled(!saverOn);
-        PowerModeStatusText().Text(
-            saverOn ? hstring{L"节能模式开启期间暂由系统接管性能调节。"}
-                    : hstring{L"调节系统在电池续航与性能释放之间的取向。"});
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+        if (m_matebookE && m_freqBinder.IsBound()) {
+            PowerModeStatusText().Text(MateBookPowerFreqBinder::SettingsHintText(overlay.mode, saverOn));
+        } else
+#endif
+        {
+            PowerModeStatusText().Text(
+                saverOn ? hstring{L"节能模式开启期间暂由系统接管性能调节。"}
+                        : hstring{L"调节系统在电池续航与性能释放之间的取向。"});
+        }
     } else {
         PowerModeCombo().IsEnabled(false);
         PowerModeCombo().SelectedIndex(-1);
@@ -2462,7 +3675,9 @@ void MainWindow::RefreshState() {
     if (mainVisible || quickFlyoutVisible) {
         m_trayConnected = !m_matebookE && FindTrayWindow() != nullptr;
     }
-    if (!mainVisible && !notifyNeedsRefresh && !quickFlyoutVisible) return;
+    const bool backgroundAccessoryMonitor =
+        m_matebookE && m_trayIcon && IsDeviceNotificationsEnabled();
+    if (!mainVisible && !notifyNeedsRefresh && !quickFlyoutVisible && !backgroundAccessoryMonitor) return;
 
     PenStatus::State state{};
     bool hasState = false;
@@ -2470,6 +3685,22 @@ void MainWindow::RefreshState() {
     if (m_matebookE) {
         state.hasHostHealth = true;
         if (m_accessories) m_accessories->Read(state);
+        if (mainVisible || quickFlyoutVisible) {
+            PollMateBookHardware(false);
+        }
+        if (m_hasHwSnapshot && m_hwSnapshot.HasCharge()) {
+            state.hasChargeLimit = true;
+            state.chargeLimitManual = m_hwSnapshot.ChargeManual();
+            state.chargeLimit = m_hwSnapshot.chargeStopPercent;
+        } else {
+            bool manual = false;
+            uint8_t cap = 100;
+            if (MateBookHw::Client::ReadVendorChargeFallback(manual, cap)) {
+                state.hasChargeLimit = true;
+                state.chargeLimitManual = manual;
+                state.chargeLimit = cap;
+            }
+        }
         hasState = true;
         if (mainVisible && GeneralPage().Visibility() == Visibility::Visible &&
             !m_serviceChangePending && GetTickCount64() - m_lastVendorDetailsQueryTick >= 3000) {
@@ -2497,6 +3728,13 @@ void MainWindow::RefreshState() {
             m_penModeAwaitingEcho = false;
         }
     }
+    if (m_kbdDetachAwaitingEcho) {
+        const bool echoed = hasState && state.hasKbdDetachSupport &&
+                            state.kbdDetachSupport == m_kbdDetachRequested;
+        if (echoed || GetTickCount64() >= m_kbdDetachEchoDeadline) {
+            m_kbdDetachAwaitingEcho = false;
+        }
+    }
 
     const bool imageRetryPending =
         mainVisible && m_mainUiInitialized && hasState &&
@@ -2521,12 +3759,45 @@ void MainWindow::RefreshState() {
         m_penSeen != m_lastRenderedPenSeen ||
         m_kbdSeen != m_lastRenderedKbdSeen;
 
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE && m_accessories && IsDeviceNotificationsEnabled()) {
+        if (m_accessories->PollPenDeviation()) {
+            const ULONGLONG now = GetTickCount64();
+            if (now - m_lastDeviationNotifyTick >= 1500) {
+                m_lastDeviationNotifyTick = now;
+                ShowNotification(EGoTouchTrayIpc::Notification::PenDeviation, 0);
+            }
+        }
+    }
+#endif
+
     if (stateChanged) {
-        const bool notify = m_matebookE && m_lastRenderedHasState && DeviceNotificationsToggle().IsOn();
+        const bool notify = m_matebookE && m_lastRenderedHasState && IsDeviceNotificationsEnabled();
         const bool penJoined = notify && m_lastRenderedState.hasStylusLink && !m_lastRenderedState.stylusLinked &&
                                state.hasStylusLink && state.stylusLinked;
         const bool keyboardJoined = notify && m_lastRenderedState.hasKbdPresent && !m_lastRenderedState.kbdPresent &&
                                     state.hasKbdPresent && state.kbdPresent;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+        const bool nowPenCharging = hasState && state.hasChargingState && state.charging;
+        const bool penStartedCharging =
+            notify && m_prevPenChargingValid && !m_prevPenCharging && nowPenCharging;
+        const bool nowKbdDetached = hasState && state.hasKbdPresent && state.kbdPresent &&
+                                    state.hasKbdDetached && state.kbdDetached;
+        const bool kbdReattached =
+            notify && m_prevKbdDetachedValid && m_prevKbdDetached &&
+            state.hasKbdPresent && state.kbdPresent && state.hasKbdDetached && !state.kbdDetached;
+        if (hasState) {
+            m_prevPenCharging = nowPenCharging;
+            m_prevPenChargingValid = true;
+            if (state.hasKbdPresent && state.kbdPresent && state.hasKbdDetached) {
+                m_prevKbdDetached = nowKbdDetached;
+                m_prevKbdDetachedValid = true;
+            } else if (!state.hasKbdPresent || !state.kbdPresent) {
+                m_prevKbdDetached = false;
+                m_prevKbdDetachedValid = false;
+            }
+        }
+#endif
         m_lastRenderedState = state;
         m_lastRenderedHasState = hasState;
         m_lastRenderedTrayConnected = m_trayConnected;
@@ -2534,8 +3805,21 @@ void MainWindow::RefreshState() {
         m_lastRenderedKbdSeen = m_kbdSeen;
         m_lastRenderedValid = true;
         m_mainUiNeedsRender = true;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+        const ULONGLONG nowTick = GetTickCount64();
+        if ((penJoined || penStartedCharging) && nowTick - m_lastPenNotifyTick >= 1000) {
+            m_lastPenNotifyTick = nowTick;
+            ShowNotification(EGoTouchTrayIpc::Notification::PenConnected, 0);
+        }
+        if ((keyboardJoined || kbdReattached) && nowTick - m_lastKbdNotifyTick >= 1000) {
+            m_lastKbdNotifyTick = nowTick;
+            ShowNotification(EGoTouchTrayIpc::Notification::KeyboardConnected, 0);
+        }
+#else
         if (penJoined) ShowNotification(EGoTouchTrayIpc::Notification::PenConnected, 0);
         if (keyboardJoined) ShowNotification(EGoTouchTrayIpc::Notification::KeyboardConnected, 0);
+#endif
+        RefreshTrayTooltip();
     }
 
     if (mainVisible && m_mainUiInitialized && m_mainUiNeedsRender) {
@@ -2941,7 +4225,11 @@ void MainWindow::BeginChargeLimitEcho(uint8_t requested) {
 }
 
 void MainWindow::UpdateChargeLimitControls(bool smart) {
-    const bool usable = !smart && m_trayConnected && !m_exitPending;
+    bool chargeReady = m_trayConnected;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) chargeReady = !m_chargeCommandPending;
+#endif
+    const bool usable = !smart && chargeReady && !m_exitPending;
     ChargeLimitSlider().IsEnabled(usable);
     ChargeLimitPreset70Btn().IsEnabled(usable);
     ChargeLimitPreset80Btn().IsEnabled(usable);
@@ -3168,28 +4456,33 @@ void MainWindow::RequestUpdateSkip() {
 }
 
 void MainWindow::SetInteractiveEnabled(bool enabled) {
+    const bool displayEnabled = enabled || (m_matebookE && !m_exitPending && m_naturalColor.IsDisplayControlAvailable());
+    bool chargeEnabled = enabled;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) chargeEnabled = !m_exitPending && !m_chargeCommandPending;
+#endif
     TouchProviderToggle().IsEnabled(enabled);
     HomeTouchToggle().IsEnabled(enabled);
     PenModeSelector().IsEnabled(enabled);
     HomePenModeSelector().IsEnabled(enabled);
     ColorModeCombo().IsEnabled(m_matebookE ? m_gamutReady && !m_gamutPending : enabled);
-    SmartChargeToggle().IsEnabled(enabled);
-    ColorTemperatureToggle().IsEnabled(enabled);
+    SmartChargeToggle().IsEnabled(chargeEnabled);
+    ColorTemperatureToggle().IsEnabled(displayEnabled);
     // 色温关着的时候滑条与重置按钮一起置灰，与充电上限在智能模式下的处理同理。
-    ColorTemperatureSlider().IsEnabled(enabled && ColorTemperatureToggle().IsOn());
-    ColorTemperatureResetButton().IsEnabled(enabled && ColorTemperatureToggle().IsOn());
-    ColorTempWarmPresetBtn().IsEnabled(enabled && ColorTemperatureToggle().IsOn());
-    ColorTempStandardPresetBtn().IsEnabled(enabled && ColorTemperatureToggle().IsOn());
-    ColorTempCoolPresetBtn().IsEnabled(enabled && ColorTemperatureToggle().IsOn());
-    EyeComfortToggle().IsEnabled(enabled);
-    HomeEyeComfortToggle().IsEnabled(enabled);
-    if (!enabled) {
+    ColorTemperatureSlider().IsEnabled(displayEnabled && ColorTemperatureToggle().IsOn());
+    ColorTemperatureResetButton().IsEnabled(displayEnabled && ColorTemperatureToggle().IsOn());
+    ColorTempWarmPresetBtn().IsEnabled(displayEnabled && ColorTemperatureToggle().IsOn());
+    ColorTempStandardPresetBtn().IsEnabled(displayEnabled && ColorTemperatureToggle().IsOn());
+    ColorTempCoolPresetBtn().IsEnabled(displayEnabled && ColorTemperatureToggle().IsOn());
+    EyeComfortToggle().IsEnabled(displayEnabled);
+    HomeEyeComfortToggle().IsEnabled(displayEnabled);
+    if (!enabled && !m_matebookE) {
         KeyboardWirelessToggle().IsEnabled(false);
         HomeKeyboardWirelessToggle().IsEnabled(false);
     }
     // 智能模式下上限由系统决定，滑块与预设按钮另外还要置灰。这一条不能只写在 RefreshControls 里：
     // 托盘断开又恢复时会走到这里，无条件放开就会让滑块在智能模式下重新变成可拖。
-    const bool chargeLimitUsable = enabled && !SmartChargeToggle().IsOn();
+    const bool chargeLimitUsable = chargeEnabled && !SmartChargeToggle().IsOn();
     ChargeLimitSlider().IsEnabled(chargeLimitUsable);
     ChargeLimitPreset70Btn().IsEnabled(chargeLimitUsable);
     ChargeLimitPreset80Btn().IsEnabled(chargeLimitUsable);
@@ -3294,7 +4587,7 @@ void MainWindow::AutoStartToggled(IInspectable const&, RoutedEventArgs const&) {
     if (m_updatingControls) return;
     const bool requested = AutoStartToggle().IsOn();
     if (m_matebookE) {
-        const auto program = L"\"" + (ApplicationDirectory() / L"openehub.exe").wstring() + L"\"";
+        const auto program = L"\"" + (ApplicationDirectory() / L"openehub.exe").wstring() + L"\" --background";
         const auto result = requested
             ? RegSetKeyValueW(HKEY_CURRENT_USER, kWindowsRunKey, L"openehub", REG_SZ, program.c_str(),
                               static_cast<DWORD>((program.size() + 1) * sizeof(wchar_t)))
@@ -3320,6 +4613,7 @@ void MainWindow::DeviceNotificationsToggled(IInspectable const&, RoutedEventArgs
     const bool requested = DeviceNotificationsToggle().IsOn();
     if (m_matebookE) {
         WriteUserSetting(L"DeviceNotifications", requested);
+        UpdateRefreshPolicy();
         return;
     }
     if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetDeviceNotifications, requested)) {
@@ -3482,6 +4776,12 @@ void MainWindow::ChargeLimitChanged(
         m_chargeLimitTimer.Interval(std::chrono::milliseconds(600));
         m_chargeLimitTimer.Tick([this](IInspectable const&, IInspectable const&) {
             m_chargeLimitTimer.Stop();
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+            if (m_matebookE) {
+                ApplyMateBookChargeLimitAsync(m_pendingChargeLimit);
+                return;
+            }
+#endif
             if (SendTrayCommand(EGoTouchTrayIpc::Command::SetChargeLimit,
                                 static_cast<LPARAM>(m_pendingChargeLimit))) {
                 BeginChargeLimitEcho(m_pendingChargeLimit);
@@ -3563,6 +4863,14 @@ void MainWindow::SmartChargeToggled(IInspectable const&, RoutedEventArgs const&)
     // 用户看到的是几，接管之后就固定在几，不会跳。
     const auto percent = static_cast<uint8_t>(smart ? 0 : ChargeLimitSlider().Value());
 
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) {
+        ApplyMateBookChargeLimitAsync(percent);
+        UpdateChargeLimitControls(smart);
+        return;
+    }
+#endif
+
     if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetChargeLimit,
                          static_cast<LPARAM>(percent))) {
         m_updatingControls = true;
@@ -3588,16 +4896,23 @@ void MainWindow::ColorTemperatureToggled(IInspectable const&, RoutedEventArgs co
     // 不会突然跳到某个很暖的值。
     const int kelvin = enabled ? static_cast<int>(ColorTemperatureSlider().Value()) : 0;
 
-    if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetColorTemperature,
-                         static_cast<LPARAM>(kelvin))) {
+    bool ok = false;
+    if (m_matebookE) {
+        ok = ApplyMateBookDisplayColor(CurrentEyeComfortEnabled(), kelvin);
+    } else {
+        ok = SendTrayCommand(EGoTouchTrayIpc::Command::SetColorTemperature,
+                             static_cast<LPARAM>(kelvin));
+    }
+    if (!ok) {
         m_updatingControls = true;
         ColorTemperatureToggle().IsOn(!enabled);
         m_updatingControls = false;
-        ShowError(L"无法切换色温", L"托盘没有响应，设置没有生效。");
+        ShowError(L"无法切换色温", m_matebookE ? L"华为显示组件未能应用色温设置。" : L"托盘没有响应，设置没有生效。");
         return;
     }
 
-    const bool usable = enabled && m_trayConnected && !m_exitPending;
+    const bool displayOk = m_trayConnected || (m_matebookE && m_naturalColor.IsDisplayControlAvailable());
+    const bool usable = enabled && displayOk && !m_exitPending;
     ColorTemperatureSliderRow().Visibility(enabled ? Visibility::Visible : Visibility::Collapsed);
     ColorTemperatureSlider().IsEnabled(usable);
     ColorTemperatureResetButton().IsEnabled(usable);
@@ -3620,9 +4935,12 @@ void MainWindow::ColorTemperaturePresetClicked(IInspectable const& sender, Route
         if (m_colorTemperatureTimer) m_colorTemperatureTimer.Stop();
         m_pendingColorTemperature = kelvin;
         ColorTemperatureValueText().Text(winrt::to_hstring(kelvin) + L"K");
-        if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetColorTemperature,
-                             static_cast<LPARAM>(kelvin))) {
-            ShowError(L"无法设置色温", L"托盘没有响应，设置没有生效。");
+        const bool ok = m_matebookE
+            ? ApplyMateBookDisplayColor(CurrentEyeComfortEnabled(), kelvin)
+            : SendTrayCommand(EGoTouchTrayIpc::Command::SetColorTemperature,
+                              static_cast<LPARAM>(kelvin));
+        if (!ok) {
+            ShowError(L"无法设置色温", m_matebookE ? L"华为显示组件未能应用色温设置。" : L"托盘没有响应，设置没有生效。");
         }
         RefreshHomeScreenSummary();
     } else {
@@ -3678,6 +4996,9 @@ void MainWindow::PowerModeSelectionChanged(
         ShowError(L"无法切换电源模式", L"当前系统电源计划未接受该模式。");
         return;
     }
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) m_freqBinder.SyncNow();
+#endif
     RefreshPowerModeControl();
 }
 
@@ -3688,6 +5009,9 @@ void MainWindow::EnergySaverToggled(IInspectable const&, RoutedEventArgs const&)
         ShowError(L"无法切换节能模式", L"系统未能应用该节能状态。");
         return;
     }
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) m_freqBinder.SyncNow();
+#endif
     RefreshPowerModeControl();
 }
 
@@ -3724,6 +5048,16 @@ void MainWindow::ChargeLimitPresetClicked(IInspectable const& sender, RoutedEven
 
     if (m_chargeLimitTimer) m_chargeLimitTimer.Stop();
     m_pendingChargeLimit = target;
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) {
+        ApplyMateBookChargeLimitAsync(target);
+        m_updatingControls = true;
+        ChargeLimitSlider().Value(static_cast<double>(target));
+        m_updatingControls = false;
+        ChargeLimitValueText().Text(winrt::to_hstring(static_cast<int>(target)) + L"%");
+        return;
+    }
+#endif
     if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetChargeLimit, static_cast<LPARAM>(target))) {
         ShowError(L"无法设置充电上限", L"托盘没有响应，设置没有生效。");
         return;
@@ -3745,8 +5079,11 @@ void MainWindow::ColorTemperatureResetClicked(IInspectable const&, RoutedEventAr
         if (m_colorTemperatureTimer) m_colorTemperatureTimer.Stop();
         m_pendingColorTemperature = 6500;
         ColorTemperatureValueText().Text(L"6500K");
-        if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetColorTemperature, 6500)) {
-            ShowError(L"无法设置色温", L"托盘没有响应，设置没有生效。");
+        const bool ok = m_matebookE
+            ? ApplyMateBookDisplayColor(CurrentEyeComfortEnabled(), 6500)
+            : SendTrayCommand(EGoTouchTrayIpc::Command::SetColorTemperature, 6500);
+        if (!ok) {
+            ShowError(L"无法设置色温", m_matebookE ? L"华为显示组件未能应用色温设置。" : L"托盘没有响应，设置没有生效。");
         }
         RefreshHomeScreenSummary();
     } else {
@@ -3759,12 +5096,15 @@ void MainWindow::EyeComfortToggled(IInspectable const& sender, RoutedEventArgs c
     if (!m_uiReady || m_updatingControls) return;
     const auto toggle = sender.try_as<Controls::ToggleSwitch>();
     const bool enabled = toggle ? toggle.IsOn() : EyeComfortToggle().IsOn();
-    if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetEyeComfort, enabled)) {
+    const bool ok = m_matebookE
+        ? ApplyMateBookDisplayColor(enabled, CurrentColorTemperatureKelvin())
+        : SendTrayCommand(EGoTouchTrayIpc::Command::SetEyeComfort, enabled);
+    if (!ok) {
         m_updatingControls = true;
         EyeComfortToggle().IsOn(!enabled);
         HomeEyeComfortToggle().IsOn(!enabled);
         m_updatingControls = false;
-        ShowError(L"无法切换护眼模式", L"托盘没有响应，设置没有生效。");
+        ShowError(L"无法切换护眼模式", m_matebookE ? L"华为显示组件未能应用护眼设置。" : L"托盘没有响应，设置没有生效。");
         return;
     }
     m_updatingControls = true;
@@ -3793,12 +5133,15 @@ void MainWindow::ColorTemperatureChanged(
     m_pendingColorTemperature = kelvin;
     if (!m_colorTemperatureTimer) {
         m_colorTemperatureTimer = DispatcherTimer();
-        m_colorTemperatureTimer.Interval(std::chrono::milliseconds(400));
+        m_colorTemperatureTimer.Interval(std::chrono::milliseconds(m_matebookE ? 80 : 400));
         m_colorTemperatureTimer.Tick([this](IInspectable const&, IInspectable const&) {
             m_colorTemperatureTimer.Stop();
-            if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetColorTemperature,
-                                 static_cast<LPARAM>(m_pendingColorTemperature))) {
-                ShowError(L"无法设置色温", L"托盘没有响应，设置没有生效。");
+            const bool ok = m_matebookE
+                ? ApplyMateBookDisplayColor(CurrentEyeComfortEnabled(), m_pendingColorTemperature)
+                : SendTrayCommand(EGoTouchTrayIpc::Command::SetColorTemperature,
+                                  static_cast<LPARAM>(m_pendingColorTemperature));
+            if (!ok) {
+                ShowError(L"无法设置色温", m_matebookE ? L"华为显示组件未能应用色温设置。" : L"托盘没有响应，设置没有生效。");
             }
         });
     }
@@ -3864,6 +5207,41 @@ void MainWindow::ExportLogsClicked(IInspectable const&, RoutedEventArgs const&) 
 winrt::fire_and_forget MainWindow::ExportLogsAsync() {
     if (m_exportInProgress) co_return;
     const auto lifetime = get_strong();
+
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    if (m_matebookE) {
+        const auto destination = PickSaveLocation(WindowHandle(), LogExport::SuggestedMateBookFileName());
+        if (!destination) co_return;
+
+        m_exportInProgress = true;
+        SetBusySpinner(ExportLogsProgress(), true);
+        ExportLogsButton().IsEnabled(false);
+
+        const bool includeVendor = ExportVendorLogsToggle().IsOn();
+        const std::wstring report = BuildMateBookDiagnosticsReport();
+        ShowExportResult(InfoBarSeverity::Informational, L"正在导出诊断信息",
+                         includeVendor ? L"正在打包，附带华为显示组件日志需要更长时间。"
+                                       : L"正在打包，请稍候。",
+                         false);
+
+        const auto ui = winrt::apartment_context();
+        co_await winrt::resume_background();
+        const auto result = LogExport::WriteMateBookDiagnosticsArchive(*destination, report, includeVendor);
+        co_await ui;
+
+        m_exportInProgress = false;
+        SetBusySpinner(ExportLogsProgress(), false);
+        ExportLogsButton().IsEnabled(true);
+
+        if (result.status == LogExport::Status::Success) {
+            m_lastExportPath = *destination;
+            ShowExportResult(InfoBarSeverity::Success, L"诊断包已导出", hstring{*destination}, true);
+        } else {
+            ShowExportResult(InfoBarSeverity::Error, L"导出失败", hstring{result.detail}, false);
+        }
+        co_return;
+    }
+#endif
 
     // 先看有没有东西可导，再弹选择器。反过来的话用户挑完位置才被告知无事可做。
     if (!LogExport::HasLogs()) {

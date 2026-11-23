@@ -2,6 +2,8 @@
 
 #include "BatteryIndicator.xaml.h"
 
+#include <limits>
+
 #if __has_include("BatteryIndicator.g.cpp")
 #include "BatteryIndicator.g.cpp"
 #endif
@@ -33,38 +35,38 @@ void BatteryIndicator::Configure(bool showText, bool largeGlyph, bool compactTex
 void BatteryIndicator::ApplyMetrics() {
     using XamlCornerRadius = winrt::Microsoft::UI::Xaml::CornerRadius;
     if (m_largeGlyph) {
-        BatteryBody().Width(38.0);
-        BatteryBody().Height(19.0);
+        BatteryBodyGrid().Width(38.0);
+        BatteryBodyGrid().Height(20.0);
         BatteryBody().CornerRadius(XamlCornerRadius{4.0, 4.0, 4.0, 4.0});
         BatteryBody().BorderThickness(Thickness{2.0, 2.0, 2.0, 2.0});
-        BatteryBody().Padding(Thickness{2.0, 2.0, 2.0, 2.0});
+        BatteryFillTrack().Margin(Thickness{4.0, 4.0, 4.0, 4.0});
         BatteryFillBar().CornerRadius(XamlCornerRadius{1.5, 1.5, 1.5, 1.5});
         BatteryCap().Width(3.0);
         BatteryCap().Height(8.0);
         BatteryCap().Margin(Thickness{1.5, 0.0, 0.0, 0.0});
         BatteryCap().CornerRadius(XamlCornerRadius{0.0, 2.0, 2.0, 0.0});
     } else if (m_compactText) {
-        BatteryBody().Width(22.0);
-        BatteryBody().Height(11.0);
+        BatteryBodyGrid().Width(22.0);
+        BatteryBodyGrid().Height(12.0);
         BatteryBody().CornerRadius(XamlCornerRadius{2.5, 2.5, 2.5, 2.5});
         BatteryBody().BorderThickness(Thickness{1.5, 1.5, 1.5, 1.5});
-        BatteryBody().Padding(Thickness{1.5, 1.5, 1.5, 1.5});
+        BatteryFillTrack().Margin(Thickness{3.0, 3.0, 3.0, 3.0});
         BatteryFillBar().CornerRadius(XamlCornerRadius{1.0, 1.0, 1.0, 1.0});
         BatteryCap().Width(2.0);
-        BatteryCap().Height(5.0);
+        BatteryCap().Height(6.0);
         BatteryCap().Margin(Thickness{1.0, 0.0, 0.0, 0.0});
         BatteryCap().CornerRadius(XamlCornerRadius{0.0, 1.5, 1.5, 0.0});
         BatteryValue().FontSize(14.0);
         BatteryPercentUnit().FontSize(10.0);
     } else {
-        BatteryBody().Width(24.0);
-        BatteryBody().Height(12.0);
+        BatteryBodyGrid().Width(24.0);
+        BatteryBodyGrid().Height(12.0);
         BatteryBody().CornerRadius(XamlCornerRadius{3.0, 3.0, 3.0, 3.0});
         BatteryBody().BorderThickness(Thickness{1.5, 1.5, 1.5, 1.5});
-        BatteryBody().Padding(Thickness{1.5, 1.5, 1.5, 1.5});
+        BatteryFillTrack().Margin(Thickness{3.0, 3.0, 3.0, 3.0});
         BatteryFillBar().CornerRadius(XamlCornerRadius{1.0, 1.0, 1.0, 1.0});
         BatteryCap().Width(2.0);
-        BatteryCap().Height(5.0);
+        BatteryCap().Height(6.0);
         BatteryCap().Margin(Thickness{1.0, 0.0, 0.0, 0.0});
         BatteryCap().CornerRadius(XamlCornerRadius{0.0, 1.5, 1.5, 0.0});
         BatteryValue().FontSize(16.0);
@@ -111,11 +113,13 @@ void BatteryIndicator::SetState(bool hasLevel, uint8_t level, bool charging) {
     if (level == 0) {
         BatteryFillBar().Visibility(Visibility::Collapsed);
     } else if (level >= 100) {
-        BatteryFillBar().Width(maxFillWidth);
+        BatteryFillBar().HorizontalAlignment(HorizontalAlignment::Stretch);
+        BatteryFillBar().Width(std::numeric_limits<double>::quiet_NaN());
         BatteryFillBar().Visibility(Visibility::Visible);
     } else {
         const double width =
             std::clamp(maxFillWidth * (static_cast<double>(level) / 100.0), minSliver, maxFillWidth);
+        BatteryFillBar().HorizontalAlignment(HorizontalAlignment::Left);
         BatteryFillBar().Width(width);
         BatteryFillBar().Visibility(Visibility::Visible);
     }

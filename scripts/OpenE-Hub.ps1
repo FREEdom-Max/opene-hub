@@ -94,6 +94,9 @@ function Set-BatteryProfile([string]$requested) {
         $state = $null
         if ([IO.File]::Exists($saved)) {
             $state = [IO.File]::ReadAllText($saved) | ConvertFrom-Json
+            if ($state.PSObject.Properties["MaxPerformance"] -or $state.PSObject.Properties["MaxPerformance1"]) {
+                throw "This backup includes processor limits. Use the OpenE hub Battery page to change or restore it."
+            }
             if ($requested -ne 'Restore' -and $scheme -ne [guid]$state.Scheme) {
                 throw '电源方案已切换。请先恢复此前设置，再选择新档位。'
             }

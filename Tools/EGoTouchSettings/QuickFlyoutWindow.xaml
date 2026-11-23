@@ -109,6 +109,28 @@
                         </StackPanel>
                     </ToggleButton>
 
+                    <ToggleButton x:Name="NaturalColorTile"
+                                  Grid.Row="2"
+                                  Grid.Column="1"
+                                  Height="60"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"
+                                  HorizontalContentAlignment="Left"
+                                  VerticalContentAlignment="Center"
+                                  Padding="12,8"
+                                  CornerRadius="{ThemeResource ControlCornerRadius}"
+                                  AutomationProperties.Name="自然色彩"
+                                  Visibility="Collapsed"
+                                  Click="NaturalColorTileClicked">
+                        <StackPanel Spacing="5">
+                            <FontIcon Glyph="&#xE790;" FontSize="16" HorizontalAlignment="Left" />
+                            <TextBlock Text="自然色彩"
+                                       FontSize="12"
+                                       TextTrimming="CharacterEllipsis"
+                                       HorizontalAlignment="Left" />
+                        </StackPanel>
+                    </ToggleButton>
+
                     <ToggleButton x:Name="EnergySaverTile"
                                   Grid.Row="2"
                                   Grid.Column="0"
@@ -292,6 +314,129 @@
                     </Grid>
                 </StackPanel>
 
+                <!-- 电池供电档位（静音 / 日常 / 性能，与上方电源模式同风格） -->
+                <Grid x:Name="FlyoutBatteryProfileSection"
+                      ColumnSpacing="6"
+                      Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Orientation="Horizontal"
+                                Spacing="5"
+                                MinWidth="72"
+                                VerticalAlignment="Center">
+                        <FontIcon Glyph="&#xEC49;"
+                                  FontSize="13"
+                                  Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                  VerticalAlignment="Center" />
+                        <TextBlock Text="电池档"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+
+                    <Grid Grid.Column="1" ColumnSpacing="6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <ToggleButton x:Name="BatteryProfileQuietBtn"
+                                      Grid.Column="0"
+                                      Height="32"
+                                      Padding="6,4"
+                                      HorizontalAlignment="Stretch"
+                                      CornerRadius="{ThemeResource ControlCornerRadius}"
+                                      Content="静音"
+                                      FontSize="12"
+                                      AutomationProperties.Name="静音档位"
+                                      ToolTipService.ToolTip="最佳能效，保留睿频，功耗由固件管理"
+                                      Click="BatteryProfileQuietClicked" />
+                        <ToggleButton x:Name="BatteryProfileDailyBtn"
+                                      Grid.Column="1"
+                                      Height="32"
+                                      Padding="6,4"
+                                      HorizontalAlignment="Stretch"
+                                      CornerRadius="{ThemeResource ControlCornerRadius}"
+                                      Content="日常"
+                                      FontSize="12"
+                                      AutomationProperties.Name="日常档位"
+                                      ToolTipService.ToolTip="平衡，保留睿频，功耗由固件管理"
+                                      Click="BatteryProfileDailyClicked" />
+                        <ToggleButton x:Name="BatteryProfilePerfBtn"
+                                      Grid.Column="2"
+                                      Height="32"
+                                      Padding="6,4"
+                                      HorizontalAlignment="Stretch"
+                                      CornerRadius="{ThemeResource ControlCornerRadius}"
+                                      Content="性能"
+                                      FontSize="12"
+                                      AutomationProperties.Name="性能档位"
+                                      ToolTipService.ToolTip="最佳性能，保留睿频和固件动态功耗控制"
+                                      Click="BatteryProfilePerfClicked" />
+                    </Grid>
+                </Grid>
+
+                <!-- 风扇转速与 CPU 温度（与原版电量状态行同风格、左右对称） -->
+                <Grid x:Name="FlyoutThermalSection"
+                      ColumnSpacing="10"
+                      MinHeight="24"
+                      Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Orientation="Horizontal"
+                                Spacing="14"
+                                VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE950;"
+                                      FontSize="13"
+                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                      VerticalAlignment="Center" />
+                            <TextBlock Text="CPU"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       VerticalAlignment="Center" />
+                            <TextBlock x:Name="FlyoutCpuTempText"
+                                       Text="—"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xEC4A;"
+                                      FontSize="13"
+                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                      VerticalAlignment="Center" />
+                            <TextBlock Text="风扇"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       VerticalAlignment="Center" />
+                            <TextBlock x:Name="FlyoutFanRpmText"
+                                       Text="—"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <Button x:Name="FlyoutAuthHwButton"
+                            Grid.Column="1"
+                            Content="授权读取"
+                            FontSize="11"
+                            Padding="8,2"
+                            MinHeight="24"
+                            CornerRadius="{ThemeResource ControlCornerRadius}"
+                            Visibility="Collapsed"
+                            VerticalAlignment="Center"
+                            Click="AuthorizeHardwareClicked" />
+                </Grid>
+
                 <Border x:Name="FlyoutAccessoryDivider"
                         Height="1"
                         Background="{ThemeResource DividerStrokeColorDefaultBrush}"
@@ -388,6 +533,11 @@
                               Content="护眼模式"
                               MinHeight="30"
                               Click="EditItemCheckClicked" />
+                    <CheckBox x:Name="EditCheckNaturalColor"
+                              Content="自然色彩"
+                              MinHeight="30"
+                              Visibility="Collapsed"
+                              Click="EditItemCheckClicked" />
                     <CheckBox x:Name="EditCheckSmartCharge"
                               Content="智能充电"
                               MinHeight="30"
@@ -407,6 +557,16 @@
                     <CheckBox x:Name="EditCheckHostPower"
                               Content="本机电量、节能与性能模式"
                               MinHeight="30"
+                              Click="EditItemCheckClicked" />
+                    <CheckBox x:Name="EditCheckBatteryProfile"
+                              Content="电池供电档位（静音 / 日常 / 性能）"
+                              MinHeight="30"
+                              Visibility="Collapsed"
+                              Click="EditItemCheckClicked" />
+                    <CheckBox x:Name="EditCheckThermal"
+                              Content="CPU 温度与风扇转速"
+                              MinHeight="30"
+                              Visibility="Collapsed"
                               Click="EditItemCheckClicked" />
                     <CheckBox x:Name="EditCheckAccessories"
                               Content="手写笔与键盘电量"

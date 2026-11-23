@@ -4,6 +4,9 @@
 #include "HuaweiNaturalColor.h"
 #if defined(_M_X64) && !defined(_M_ARM64EC)
 #include "MateBookAccessories.h"
+#include "MateBookBatteryProfile.h"
+#include "MateBookHwChannel.h"
+#include "MateBookPowerFreqBinder.h"
 #endif
 #include "NotificationWindow.xaml.h"
 #include "QuickFlyoutWindow.xaml.h"
@@ -13,6 +16,7 @@ namespace winrt::EGoTouchSettings::implementation {
 struct MainWindow : MainWindowT<MainWindow> {
     MainWindow();
     ~MainWindow();
+    bool StartsHidden() const noexcept { return m_startsHidden; }
 
     void PenModeSelectionChanged(
         IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
@@ -100,13 +104,54 @@ private:
     void UpdateRefreshPolicy();
     void EnsureMainUiInitialized();
     bool m_matebookE = false;
+    bool m_startsHidden = false;
     bool m_serviceChangePending = false;
     HuaweiNaturalColor m_naturalColor;
     void RefreshNaturalColor();
 #if defined(_M_X64) && !defined(_M_ARM64EC)
     winrt::fire_and_forget StartAccessories();
     std::unique_ptr<MateBookAccessories> m_accessories;
+    MateBookHw::Client m_hwClient;
+    MateBookPowerFreqBinder m_freqBinder;
+    MateBookHw::Snapshot m_hwSnapshot{};
+    bool m_hasHwSnapshot = false;
+    bool m_hwInstallPending = false;
+    bool m_hwWakeInFlight = false;
+    ULONGLONG m_lastHwWakeTick = 0;
+    bool m_chargeCommandPending = false;
+    bool m_accessoriesStarted = false;
+    bool m_prevPenCharging = false;
+    bool m_prevPenChargingValid = false;
+    bool m_prevKbdDetached = false;
+    bool m_prevKbdDetachedValid = false;
+    ULONGLONG m_lastPenNotifyTick = 0;
+    ULONGLONG m_lastKbdNotifyTick = 0;
+    ULONGLONG m_lastDeviationNotifyTick = 0;
+    void PollMateBookHardware(bool wakeSensors);
+    winrt::fire_and_forget WakeMateBookHardwareAsync();
+    winrt::fire_and_forget InstallHardwareServiceAsync();
+    winrt::fire_and_forget ApplyMateBookChargeLimitAsync(uint8_t percent);
+    void ShowMateBookTrayMenu(HWND hwnd);
+    void OnPowerResume();
+    std::wstring BuildMateBookDiagnosticsReport();
+    void InvalidateFlyoutHardwareCache() noexcept;
+    static VOID CALLBACK OnAccessoryChangedCallback(PVOID parameter, BOOLEAN timerOrWaitFired);
+    HANDLE m_accessoryNotifyEvent = nullptr;
+    HANDLE m_accessoryNotifyWait = nullptr;
+    HDEVNOTIFY m_hidDevNotify = nullptr;
+    int m_cachedNaturalColor = -1;
+    bool m_cachedProfileSupported = false;
+    int m_cachedBatteryProfile = 1;
+    ULONGLONG m_lastFlyoutQueryTick = 0;
+    uint32_t m_quickFlyoutMask = 0xFFFFFFFFu;
+    bool m_trayHoverArmed = false;
+    POINT m_trayHoverPoint{};
 #endif
+    bool m_idleMemoryTrimmed = false;
+    bool IsDeviceNotificationsEnabled();
+    bool ApplyMateBookDisplayColor(bool eyeComfort, int kelvin);
+    int CurrentColorTemperatureKelvin();
+    bool CurrentEyeComfortEnabled();
     void RefreshScreenControls();
     void RefreshPowerModeControl();
     void ToggleQuickFlyout(bool hasAnchor, int anchorX, int anchorY);
@@ -120,12 +165,22 @@ private:
     void RefreshVendorServicesDetails();
     bool m_closed = false;
     bool m_trayIcon = false;
+    HICON m_trayIconHandle = nullptr;
+    bool m_trayIconOwned = false;
+    bool m_trayIconDark = true;
+    int m_trayIconPx = 0;
     bool m_quitRequested = false;
     bool m_fanStarted = false;
     winrt::handle m_fanProcess;
     bool m_gamutPending = false;
     bool m_gamutReady = false;
     void RegisterTrayIcon();
+    void RefreshTrayIconImage();
+    void RefreshTrayTooltip();
+    std::wstring BuildTrayTooltipText();
+    void ReleaseTrayIconHandle() noexcept;
+    std::wstring m_lastTrayTip;
+    ULONGLONG m_lastTrayHoverTick = 0;
     void StartFanReader(bool elevated);
     void RefreshGamut();
     winrt::fire_and_forget ApplyGamut(int mode);

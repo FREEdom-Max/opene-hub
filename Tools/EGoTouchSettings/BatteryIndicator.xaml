@@ -18,30 +18,35 @@
                 VerticalAlignment="Center"
                 Visibility="Collapsed">
         <Grid x:Name="BatteryIconGroup"
+              UseLayoutRounding="False"
               VerticalAlignment="Center">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <Border x:Name="BatteryBody"
-                    Grid.Column="0"
-                    Width="24"
-                    Height="12"
-                    CornerRadius="3"
-                    BorderThickness="1.5"
-                    Padding="1.5"
-                    BorderBrush="{ThemeResource TextFillColorPrimaryBrush}"
-                    Opacity="0.9">
-                <Border x:Name="BatteryFillBar"
-                        HorizontalAlignment="Left"
-                        VerticalAlignment="Stretch"
-                        CornerRadius="1"
-                        Visibility="Collapsed" />
-            </Border>
+            <Grid x:Name="BatteryBodyGrid"
+                  Grid.Column="0"
+                  Width="24"
+                  Height="12">
+                <Border x:Name="BatteryBody"
+                        CornerRadius="3"
+                        BorderThickness="1.5"
+                        BorderBrush="{ThemeResource TextFillColorPrimaryBrush}"
+                        Opacity="0.9" />
+                <Grid x:Name="BatteryFillTrack"
+                      Margin="3"
+                      VerticalAlignment="Stretch">
+                    <Border x:Name="BatteryFillBar"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Stretch"
+                            CornerRadius="1"
+                            Visibility="Collapsed" />
+                </Grid>
+            </Grid>
             <Border x:Name="BatteryCap"
                     Grid.Column="1"
                     Width="2"
-                    Height="5"
+                    Height="6"
                     Margin="1,0,0,0"
                     CornerRadius="0,1.5,1.5,0"
                     VerticalAlignment="Center"

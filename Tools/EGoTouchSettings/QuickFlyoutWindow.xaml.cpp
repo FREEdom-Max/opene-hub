@@ -303,12 +303,16 @@ void QuickFlyoutWindow::SyncFrameTheme() {
 }
 
 int QuickFlyoutWindow::EstimateHeightDip() const noexcept {
-    if (m_editMode) return kEditModeHeightDip;
+    if (m_editMode) {
+        return kEditModeHeightDip + (m_naturalColorSupported ? 32 : 0) +
+               (m_batteryProfileSupported ? 32 : 0) + (m_thermalSupported ? 32 : 0);
+    }
 
     int height = 78; // 上下内边距 + 底栏 + 底部分隔线
     int tileCount = 0;
-    if (m_itemsMask & QuickFlyoutItems::kTouchTile) ++tileCount;
+    if (!m_hideTouchTile && (m_itemsMask & QuickFlyoutItems::kTouchTile)) ++tileCount;
     if (m_itemsMask & QuickFlyoutItems::kEyeComfortTile) ++tileCount;
+    if (m_naturalColorSupported && (m_itemsMask & QuickFlyoutItems::kNaturalColorTile)) ++tileCount;
     if (m_itemsMask & QuickFlyoutItems::kSmartChargeTile) ++tileCount;
     if (m_itemsMask & QuickFlyoutItems::kKbdWirelessTile) ++tileCount;
     if (m_itemsMask & QuickFlyoutItems::kEnergySaverTile) ++tileCount;
@@ -316,6 +320,9 @@ int QuickFlyoutWindow::EstimateHeightDip() const noexcept {
     const bool hasTiles = tileCount > 0;
     const bool hasColorTemp = (m_itemsMask & QuickFlyoutItems::kColorTempSlider) != 0;
     const bool hasHostPower = (m_itemsMask & QuickFlyoutItems::kHostPowerCard) != 0;
+    const bool hasBatteryProfile =
+        m_batteryProfileSupported && (m_itemsMask & QuickFlyoutItems::kBatteryProfileRow) != 0;
+    const bool hasThermal = m_thermalSupported && (m_itemsMask & QuickFlyoutItems::kThermalRow) != 0;
     const bool hasAccessories = (m_itemsMask & QuickFlyoutItems::kAccessories) != 0 &&
                                 (m_penRowVisible || m_kbdRowVisible);
 
@@ -324,16 +331,18 @@ int QuickFlyoutWindow::EstimateHeightDip() const noexcept {
         height += rows * 60 + (std::max)(0, rows - 1) * 8 + 12;
     }
     if (hasColorTemp) height += 46;
-    if ((hasTiles || hasColorTemp) && (hasHostPower || hasAccessories)) height += 13;
+    if ((hasTiles || hasColorTemp) && (hasHostPower || hasBatteryProfile || hasThermal || hasAccessories)) height += 13;
     if (hasHostPower) height += 74;
-    if (hasHostPower && hasAccessories) height += 13;
+    if (hasBatteryProfile) height += 44;
+    if (hasThermal) height += 36;
+    if ((hasHostPower || hasBatteryProfile || hasThermal) && hasAccessories) height += 13;
     if (hasAccessories) {
         if (m_penRowVisible) height += 30;
         if (m_kbdRowVisible) height += 30;
         if (m_penRowVisible && m_kbdRowVisible) height += 6;
         height += 6;
     }
-    if (!hasTiles && !hasColorTemp && !hasHostPower && !hasAccessories) {
+    if (!hasTiles && !hasColorTemp && !hasHostPower && !hasBatteryProfile && !hasThermal && !hasAccessories) {
         height += 40;
     }
     return (std::max)(kMinFlyoutHeightDip, height);
@@ -535,6 +544,7 @@ void QuickFlyoutWindow::FocusDefaultElement() {
             for (UIElement const& candidate : {
                      TouchTile().as<UIElement>(),
                      EyeComfortTile().as<UIElement>(),
+                     NaturalColorTile().as<UIElement>(),
                      SmartChargeTile().as<UIElement>(),
                      KbdWirelessTile().as<UIElement>(),
                      EnergySaverTile().as<UIElement>()}) {
@@ -673,19 +683,21 @@ void QuickFlyoutWindow::ApplyItemsLayout() {
 
     struct TileEntry {
         uint32_t flag;
+        bool allowed;
         ToggleButton button;
     };
     const TileEntry entries[] = {
-        {QuickFlyoutItems::kTouchTile, TouchTile()},
-        {QuickFlyoutItems::kEyeComfortTile, EyeComfortTile()},
-        {QuickFlyoutItems::kSmartChargeTile, SmartChargeTile()},
-        {QuickFlyoutItems::kKbdWirelessTile, KbdWirelessTile()},
-        {QuickFlyoutItems::kEnergySaverTile, EnergySaverTile()},
+        {QuickFlyoutItems::kTouchTile, !m_hideTouchTile, TouchTile()},
+        {QuickFlyoutItems::kEyeComfortTile, true, EyeComfortTile()},
+        {QuickFlyoutItems::kNaturalColorTile, m_naturalColorSupported, NaturalColorTile()},
+        {QuickFlyoutItems::kSmartChargeTile, true, SmartChargeTile()},
+        {QuickFlyoutItems::kKbdWirelessTile, true, KbdWirelessTile()},
+        {QuickFlyoutItems::kEnergySaverTile, true, EnergySaverTile()},
     };
 
     int visibleTileCount = 0;
     for (const auto& entry : entries) {
-        const bool show = (m_itemsMask & entry.flag) != 0;
+        const bool show = entry.allowed && ((m_itemsMask & entry.flag) != 0);
         entry.button.Visibility(show ? Visibility::Visible : Visibility::Collapsed);
         if (show) {
             Controls::Grid::SetRow(entry.button, visibleTileCount / 2);
@@ -709,29 +721,44 @@ void QuickFlyoutWindow::ApplyItemsLayout() {
     const bool showHostPower = (m_itemsMask & QuickFlyoutItems::kHostPowerCard) != 0;
     FlyoutPowerSection().Visibility(showHostPower ? Visibility::Visible : Visibility::Collapsed);
 
+    const bool showBatteryProfile =
+        m_batteryProfileSupported && ((m_itemsMask & QuickFlyoutItems::kBatteryProfileRow) != 0);
+    FlyoutBatteryProfileSection().Visibility(showBatteryProfile ? Visibility::Visible : Visibility::Collapsed);
+
+    const bool showThermal = m_thermalSupported && ((m_itemsMask & QuickFlyoutItems::kThermalRow) != 0);
+    FlyoutThermalSection().Visibility(showThermal ? Visibility::Visible : Visibility::Collapsed);
+
     const bool showAccessories =
         ((m_itemsMask & QuickFlyoutItems::kAccessories) != 0) &&
         (m_penRowVisible || m_kbdRowVisible);
     FlyoutAccessorySection().Visibility(showAccessories ? Visibility::Visible : Visibility::Collapsed);
 
     const bool hasTop = visibleTileCount > 0 || showColorTemp;
-    const bool hasBottom = showHostPower || showAccessories;
+    const bool hasMiddle = showHostPower || showBatteryProfile || showThermal;
+    const bool hasBottom = hasMiddle || showAccessories;
     FlyoutTopDivider().Visibility((hasTop && hasBottom) ? Visibility::Visible : Visibility::Collapsed);
     FlyoutAccessoryDivider().Visibility(
-        (showHostPower && showAccessories) ? Visibility::Visible : Visibility::Collapsed);
+        (hasMiddle && showAccessories) ? Visibility::Visible : Visibility::Collapsed);
     FlyoutEmptyHintText().Visibility(
         (!hasTop && !hasBottom) ? Visibility::Visible : Visibility::Collapsed);
 }
 
 void QuickFlyoutWindow::SyncEditCheckBoxes() {
     m_updatingControls = true;
+    EditCheckTouch().Visibility(m_hideTouchTile ? Visibility::Collapsed : Visibility::Visible);
     EditCheckTouch().IsChecked((m_itemsMask & QuickFlyoutItems::kTouchTile) != 0);
     EditCheckEyeComfort().IsChecked((m_itemsMask & QuickFlyoutItems::kEyeComfortTile) != 0);
+    EditCheckNaturalColor().Visibility(m_naturalColorSupported ? Visibility::Visible : Visibility::Collapsed);
+    EditCheckNaturalColor().IsChecked((m_itemsMask & QuickFlyoutItems::kNaturalColorTile) != 0);
     EditCheckSmartCharge().IsChecked((m_itemsMask & QuickFlyoutItems::kSmartChargeTile) != 0);
     EditCheckKbdWireless().IsChecked((m_itemsMask & QuickFlyoutItems::kKbdWirelessTile) != 0);
     EditCheckEnergySaver().IsChecked((m_itemsMask & QuickFlyoutItems::kEnergySaverTile) != 0);
     EditCheckColorTemp().IsChecked((m_itemsMask & QuickFlyoutItems::kColorTempSlider) != 0);
     EditCheckHostPower().IsChecked((m_itemsMask & QuickFlyoutItems::kHostPowerCard) != 0);
+    EditCheckBatteryProfile().Visibility(m_batteryProfileSupported ? Visibility::Visible : Visibility::Collapsed);
+    EditCheckBatteryProfile().IsChecked((m_itemsMask & QuickFlyoutItems::kBatteryProfileRow) != 0);
+    EditCheckThermal().Visibility(m_thermalSupported ? Visibility::Visible : Visibility::Collapsed);
+    EditCheckThermal().IsChecked((m_itemsMask & QuickFlyoutItems::kThermalRow) != 0);
     EditCheckAccessories().IsChecked((m_itemsMask & QuickFlyoutItems::kAccessories) != 0);
     m_updatingControls = false;
 }
@@ -742,27 +769,45 @@ void QuickFlyoutWindow::ApplyPowerModeSelection(PowerOverlay::Mode mode) {
     PowerModePerformanceBtn().IsChecked(mode == PowerOverlay::Mode::BestPerformance);
 }
 
+void QuickFlyoutWindow::ApplyBatteryProfileSelection(MateBookBatteryProfile::Profile profile) {
+    BatteryProfileQuietBtn().IsChecked(profile == MateBookBatteryProfile::Profile::Quiet);
+    BatteryProfileDailyBtn().IsChecked(profile == MateBookBatteryProfile::Profile::Daily);
+    BatteryProfilePerfBtn().IsChecked(profile == MateBookBatteryProfile::Profile::Performance);
+}
+
 void QuickFlyoutWindow::ApplyStateToControls(const QuickFlyoutState& state) {
     m_updatingControls = true;
 
+    m_hideTouchTile = state.hideTouchTile;
+    m_naturalColorSupported = state.naturalColorSupported;
+    m_thermalSupported = state.thermalSupported;
+    m_batteryProfileSupported = state.batteryProfileSupported;
+
     m_itemsMask = state.itemsMask | QuickFlyoutItems::kConfiguredBit |
                   QuickFlyoutItems::kSmartChargeDefaultMigratedBit;
+    if (m_hideTouchTile) {
+        m_itemsMask |= QuickFlyoutItems::kMateBookEDefaultMigratedBit |
+                       QuickFlyoutItems::kBatteryProfileMigratedBit;
+    }
 
     TouchTile().IsEnabled(state.trayConnected);
     TouchTile().IsChecked(state.touchDesired);
 
-    EyeComfortTile().IsEnabled(state.trayConnected);
+    EyeComfortTile().IsEnabled(state.trayConnected || state.eyeComfortAvailable);
     EyeComfortTile().IsChecked(state.eyeComfort);
+
+    NaturalColorTile().IsEnabled(state.naturalColorAvailable);
+    NaturalColorTile().IsChecked(state.naturalColor);
 
     const bool kbdDetected =
         state.hasState && state.status.hasKbdPresent && state.status.kbdPresent;
     const bool kbdChecked = state.kbdDetachPending
         ? state.kbdDetachPendingValue
         : (kbdDetected && state.status.hasKbdDetachSupport && state.status.kbdDetachSupport);
-    KbdWirelessTile().IsEnabled(state.trayConnected && kbdDetected);
+    KbdWirelessTile().IsEnabled((state.trayConnected || state.kbdWirelessAvailable) && kbdDetected);
     KbdWirelessTile().IsChecked(kbdChecked);
 
-    SmartChargeTile().IsEnabled(state.trayConnected && state.hasChargeLimit);
+    SmartChargeTile().IsEnabled((state.trayConnected || state.smartChargeAvailable) && state.hasChargeLimit);
     SmartChargeTile().IsChecked(state.smartCharge);
     const hstring smartChargeTip = !state.hasChargeLimit
         ? hstring{L"正在读取充电保护状态"}
@@ -778,8 +823,9 @@ void QuickFlyoutWindow::ApplyStateToControls(const QuickFlyoutState& state) {
     EnergySaverTile().IsEnabled(true);
     EnergySaverTile().IsChecked(saverActive);
 
+    const bool ctAvailable = state.trayConnected || state.colorTempAvailable;
     const bool ctOn = state.colorTemperatureKelvin > 0;
-    ColorTempToggle().IsEnabled(state.trayConnected);
+    ColorTempToggle().IsEnabled(ctAvailable);
     ColorTempToggle().IsChecked(ctOn);
     if (!m_colorTempTimer || !m_colorTempTimer.IsRunning()) {
         m_lastSliderKelvin = SnapColorTempKelvin(static_cast<double>(
@@ -788,7 +834,23 @@ void QuickFlyoutWindow::ApplyStateToControls(const QuickFlyoutState& state) {
         ColorTempValueText().Text(
             ctOn ? (to_hstring(m_lastSliderKelvin) + L"K") : L"关闭");
     }
-    ColorTempSlider().IsEnabled(state.trayConnected && ctOn);
+    ColorTempSlider().IsEnabled(ctAvailable && ctOn);
+
+    if (m_batteryProfileSupported) {
+        ApplyBatteryProfileSelection(state.batteryProfile);
+        BatteryProfileQuietBtn().IsEnabled(true);
+        BatteryProfileDailyBtn().IsEnabled(true);
+        BatteryProfilePerfBtn().IsEnabled(true);
+    }
+
+    if (m_thermalSupported) {
+        FlyoutCpuTempText().Text(
+            state.hasCpuTemp ? (to_hstring(state.cpuTempC) + L" °C") : hstring{L"—"});
+        FlyoutFanRpmText().Text(
+            state.hasFanRpm ? (to_hstring(state.fanRpm) + L" RPM") : hstring{L"—"});
+        const bool showAuth = state.canAuthorizeHw && !state.hasCpuTemp && !state.hasFanRpm;
+        FlyoutAuthHwButton().Visibility(showAuth ? Visibility::Visible : Visibility::Collapsed);
+    }
 
     const hstring saverTag = state.powerOverlay.energySaverActive ? hstring{L"（节能）"} : hstring{};
     if (state.hasHostPower && state.hostPower.batteryPresent && state.hostPower.percent <= 100) {
@@ -817,6 +879,7 @@ void QuickFlyoutWindow::ApplyStateToControls(const QuickFlyoutState& state) {
         FlyoutHostWattText().Text(L"");
     }
 
+    m_powerFreqBound = state.powerFreqBound;
     const Visibility modeVis =
         state.powerOverlay.supported ? Visibility::Visible : Visibility::Collapsed;
     FlyoutPowerModeDivider().Visibility(modeVis);
@@ -833,6 +896,11 @@ void QuickFlyoutWindow::ApplyStateToControls(const QuickFlyoutState& state) {
         PowerModeEfficiencyBtn().IsEnabled(modeInteractive);
         PowerModeBalancedBtn().IsEnabled(modeInteractive);
         PowerModePerformanceBtn().IsEnabled(modeInteractive);
+        if (state.powerFreqBound) {
+            ToolTipService::SetToolTip(PowerModeEfficiencyBtn(), box_value(L"最佳能效（P 核 2.0 GHz · E 核 1.5 GHz）"));
+            ToolTipService::SetToolTip(PowerModeBalancedBtn(), box_value(L"平衡（P 核 2.8 GHz · E 核 2.2 GHz）"));
+            ToolTipService::SetToolTip(PowerModePerformanceBtn(), box_value(L"最佳性能（不限频）"));
+        }
     }
 
     const bool showPen = state.hasState && (
@@ -899,6 +967,16 @@ void QuickFlyoutWindow::EyeComfortTileClicked(IInspectable const&, RoutedEventAr
     if (!m_callbacks.setEyeComfort(requested)) {
         m_updatingControls = true;
         EyeComfortTile().IsChecked(!requested);
+        m_updatingControls = false;
+    }
+}
+
+void QuickFlyoutWindow::NaturalColorTileClicked(IInspectable const&, RoutedEventArgs const&) {
+    if (!m_initialized || m_updatingControls || !m_callbacks.setNaturalColor) return;
+    const bool requested = IsTileChecked(NaturalColorTile());
+    if (!m_callbacks.setNaturalColor(requested)) {
+        m_updatingControls = true;
+        NaturalColorTile().IsChecked(!requested);
         m_updatingControls = false;
     }
 }
@@ -986,6 +1064,33 @@ void QuickFlyoutWindow::PowerModePerformanceClicked(IInspectable const&, RoutedE
     }
 }
 
+void QuickFlyoutWindow::HandleBatteryProfileClick(MateBookBatteryProfile::Profile profile) {
+    if (!m_initialized || m_updatingControls) return;
+    if (m_callbacks.setBatteryProfile && m_callbacks.setBatteryProfile(profile)) {
+        if (m_callbacks.readState) {
+            ApplyStateToControls(m_callbacks.readState());
+        } else {
+            m_updatingControls = true;
+            ApplyBatteryProfileSelection(profile);
+            m_updatingControls = false;
+        }
+    } else if (m_callbacks.readState) {
+        ApplyStateToControls(m_callbacks.readState());
+    }
+}
+
+void QuickFlyoutWindow::BatteryProfileQuietClicked(IInspectable const&, RoutedEventArgs const&) {
+    HandleBatteryProfileClick(MateBookBatteryProfile::Profile::Quiet);
+}
+
+void QuickFlyoutWindow::BatteryProfileDailyClicked(IInspectable const&, RoutedEventArgs const&) {
+    HandleBatteryProfileClick(MateBookBatteryProfile::Profile::Daily);
+}
+
+void QuickFlyoutWindow::BatteryProfilePerfClicked(IInspectable const&, RoutedEventArgs const&) {
+    HandleBatteryProfileClick(MateBookBatteryProfile::Profile::Performance);
+}
+
 void QuickFlyoutWindow::ColorTempToggleClicked(IInspectable const&, RoutedEventArgs const&) {
     if (!m_initialized || m_updatingControls || !m_callbacks.setColorTemperature) return;
     const bool enabled = IsTileChecked(ColorTempToggle());
@@ -1033,16 +1138,23 @@ void QuickFlyoutWindow::EditItemCheckClicked(IInspectable const&, RoutedEventArg
     if (!m_initialized || m_updatingControls) return;
     uint32_t mask = QuickFlyoutItems::kConfiguredBit |
                     QuickFlyoutItems::kSmartChargeDefaultMigratedBit;
+    if (m_hideTouchTile) {
+        mask |= QuickFlyoutItems::kMateBookEDefaultMigratedBit |
+                QuickFlyoutItems::kBatteryProfileMigratedBit;
+    }
     const auto isChecked = [](CheckBox const& box) {
         return box.IsChecked() && box.IsChecked().Value();
     };
-    if (isChecked(EditCheckTouch())) mask |= QuickFlyoutItems::kTouchTile;
+    if (!m_hideTouchTile && isChecked(EditCheckTouch())) mask |= QuickFlyoutItems::kTouchTile;
     if (isChecked(EditCheckEyeComfort())) mask |= QuickFlyoutItems::kEyeComfortTile;
+    if (m_naturalColorSupported && isChecked(EditCheckNaturalColor())) mask |= QuickFlyoutItems::kNaturalColorTile;
     if (isChecked(EditCheckSmartCharge())) mask |= QuickFlyoutItems::kSmartChargeTile;
     if (isChecked(EditCheckKbdWireless())) mask |= QuickFlyoutItems::kKbdWirelessTile;
     if (isChecked(EditCheckEnergySaver())) mask |= QuickFlyoutItems::kEnergySaverTile;
     if (isChecked(EditCheckColorTemp())) mask |= QuickFlyoutItems::kColorTempSlider;
     if (isChecked(EditCheckHostPower())) mask |= QuickFlyoutItems::kHostPowerCard;
+    if (m_batteryProfileSupported && isChecked(EditCheckBatteryProfile())) mask |= QuickFlyoutItems::kBatteryProfileRow;
+    if (m_thermalSupported && isChecked(EditCheckThermal())) mask |= QuickFlyoutItems::kThermalRow;
     if (isChecked(EditCheckAccessories())) mask |= QuickFlyoutItems::kAccessories;
 
     m_itemsMask = mask;
@@ -1053,11 +1165,18 @@ void QuickFlyoutWindow::EditItemCheckClicked(IInspectable const&, RoutedEventArg
 
 void QuickFlyoutWindow::ResetFlyoutItemsClicked(IInspectable const&, RoutedEventArgs const&) {
     if (!m_initialized) return;
-    m_itemsMask = QuickFlyoutItems::kDefaultMask;
+    m_itemsMask = m_hideTouchTile ? QuickFlyoutItems::kMateBookEDefaultMask
+                                  : QuickFlyoutItems::kDefaultMask;
     SyncEditCheckBoxes();
     if (m_callbacks.saveItemsMask) {
         m_callbacks.saveItemsMask(m_itemsMask);
     }
+}
+
+void QuickFlyoutWindow::AuthorizeHardwareClicked(IInspectable const&, RoutedEventArgs const&) {
+    if (!m_initialized || m_shutdown) return;
+    auto auth = m_callbacks.authorizeHardware;
+    if (auth) auth();
 }
 
 void QuickFlyoutWindow::FlushPendingColorTemperature() {

@@ -9,4 +9,4 @@ if not exist "%~dp0build\settings-x64\openehub.exe" (
         exit /b 1
     )
 )
-start "" "%~dp0build\settings-x64\openehub.exe"
+start "" "%~dp0build\settings-x64\openehub.exe" %*

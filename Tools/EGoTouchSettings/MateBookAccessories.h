@@ -10,13 +10,34 @@
 class MateBookAccessories {
 public:
     void Start(const std::filesystem::path& directory) {
-        penHost.Start((directory / L"openehubPen.exe").wstring(), L"");
-        keyboardHost.Start((directory / L"openehubKeyboard.exe").wstring(), L"");
+        (void)penHost.Start((directory / L"openehubPen.exe").wstring(), L"");
+        (void)keyboardHost.Start((directory / L"openehubKeyboard.exe").wstring(), L"");
     }
 
     bool SetDetachSupport(bool enabled) {
         Gaokun::Keyboard::CommandWriter writer;
         return keyboardHost.IsRunning() && writer.Open() && writer.SetDetachSupport(enabled);
+    }
+
+    void SetUsbEventDriven(bool on) noexcept { usbEventDriven = on; }
+    void InvalidateUsbCache() noexcept {
+        usbChecked = false;
+        nextUsbCheck = 0;
+    }
+
+    // Drain discrete PenHost pipe events and return true if a pen deviation reminder arrived.
+    bool PollPenDeviation() {
+        if (!penHost.IsRunning()) return false;
+        if (!penEventOpen) penEventOpen = penEventReader.Open();
+        if (!penEventOpen) return false;
+        bool deviation = false;
+        Gaokun::Pen::Event ev{};
+        while (penEventReader.Poll(ev)) {
+            if (ev.kind == static_cast<uint32_t>(Gaokun::Pen::EventKind::DeviationReminder)) {
+                deviation = true;
+            }
+        }
+        return deviation;
     }
 
     void Read(PenStatus::State& out) {
@@ -76,10 +97,17 @@ public:
         // Some Intel firmware versions expose the attached keyboard as a USB HID
         // keyboard but omit the accessory plug-in's connection report.
         if (!out.hasKbdPresent || !out.kbdPresent) {
-            const auto now = GetTickCount64();
-            if (now >= nextUsbCheck) {
-                usbKeyboard = HasUsbKeyboard();
-                nextUsbCheck = now + 3000;
+            if (usbEventDriven) {
+                if (!usbChecked) {
+                    usbKeyboard = HasUsbKeyboard();
+                    usbChecked = true;
+                }
+            } else {
+                const auto now = GetTickCount64();
+                if (now >= nextUsbCheck) {
+                    usbKeyboard = HasUsbKeyboard();
+                    nextUsbCheck = now + 3000;
+                }
             }
             if (usbKeyboard) {
                 out.hasKbdPresent = out.kbdPresent = true;
@@ -110,10 +138,14 @@ private:
 
     ULONGLONG nextUsbCheck{};
     bool usbKeyboard{};
+    bool usbEventDriven = false;
+    bool usbChecked = false;
     Gaokun::Pen::HostController penHost;
     Gaokun::Keyboard::HostController keyboardHost;
     Gaokun::Pen::SnapshotReader penReader;
+    Gaokun::Pen::EventReader penEventReader;
     Gaokun::Keyboard::SnapshotReader keyboardReader;
     bool penOpen = false;
+    bool penEventOpen = false;
     bool keyboardOpen = false;
 };

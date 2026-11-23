@@ -18,6 +18,7 @@ struct Result {
 
 // 形如 OpenEGoHub-logs-20260831-0912.zip，取本地时间。
 std::wstring SuggestedFileName();
+std::wstring SuggestedMateBookFileName();
 
 // 目录里有没有值得导出的东西。UI 用它在弹出选择器之前就给出提示。
 bool HasLogs();
@@ -29,5 +30,11 @@ bool HasLogs();
 // 于那份日志里：我们这侧只看得到宿主起没起来，面板 ID、总线状态、固件刷写都在厂商那边。
 // 默认不收，因为它按天分文件、目录里常年堆着上百 MB，而多数反馈用不到。
 Result WriteArchive(const std::wstring& destinationZip, bool includeVendorLogs = false);
+
+// MateBook E (x64 独立模式) 诊断包导出：写入实时状态报告、电源档位备份，以及可选的日志。
+Result WriteMateBookDiagnosticsArchive(
+    const std::wstring& destinationZip,
+    const std::wstring& diagnosticsReport,
+    bool includeVendorLogs = false);
 
 } // namespace LogExport

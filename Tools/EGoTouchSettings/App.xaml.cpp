@@ -47,6 +47,28 @@ App::~App() {
 }
 
 void App::OnLaunched(LaunchActivatedEventArgs const&) {
+    if (HasCommandLineSwitch(L"--quit")) {
+        if (HWND bridge = FindWindowExW(
+                HWND_MESSAGE, nullptr, EGoTouchTrayIpc::kSettingsBridgeWindowClass, nullptr)) {
+            DWORD ownerPid = 0;
+            GetWindowThreadProcessId(bridge, &ownerPid);
+            HANDLE proc = (ownerPid && ownerPid != GetCurrentProcessId())
+                ? OpenProcess(SYNCHRONIZE, FALSE, ownerPid)
+                : nullptr;
+            PostMessageW(bridge, EGoTouchTrayIpc::kSettingsLifecycleMessage,
+                         static_cast<WPARAM>(EGoTouchTrayIpc::SettingsLifecycle::InstallStarted), 0);
+            if (proc) {
+                (void)WaitForSingleObject(proc, 4000);
+                CloseHandle(proc);
+            }
+        }
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+        MateBookPowerFreqBinder::RestoreStaleSessionIfPresent();
+#endif
+        Exit();
+        return;
+    }
+
     const bool background = HasCommandLineSwitch(L"--background");
     if (m_secondaryInstance) {
         HWND bridge = nullptr;
@@ -62,8 +84,11 @@ void App::OnLaunched(LaunchActivatedEventArgs const&) {
         return;
     }
 
-    m_window = make<MainWindow>();
-    if (!background) m_window.Activate();
+    auto mainWin = make_self<MainWindow>();
+    m_window = *mainWin;
+    if (!mainWin->StartsHidden()) {
+        m_window.Activate();
+    }
 }
 
 } // namespace winrt::EGoTouchSettings::implementation

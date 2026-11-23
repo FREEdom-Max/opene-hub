@@ -391,6 +391,17 @@ std::wstring SuggestedFileName() {
     return text;
 }
 
+std::wstring SuggestedMateBookFileName() {
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t text[64]{};
+    std::swprintf(text, std::size(text), L"OpenEHub-diagnostics-%04u%02u%02u-%02u%02u.zip",
+                  static_cast<unsigned>(now.wYear), static_cast<unsigned>(now.wMonth),
+                  static_cast<unsigned>(now.wDay), static_cast<unsigned>(now.wHour),
+                  static_cast<unsigned>(now.wMinute));
+    return text;
+}
+
 bool HasLogs() {
     const fs::path logs = LogsDir();
     if (logs.empty()) return false;
@@ -487,6 +498,101 @@ Result WriteArchive(const std::wstring& destinationZip, bool includeVendorLogs) 
         return result;
     }
 
+    result.status = Status::Success;
+    return result;
+}
+
+Result WriteMateBookDiagnosticsArchive(
+    const std::wstring& destinationZip,
+    const std::wstring& diagnosticsReport,
+    bool includeVendorLogs) {
+    Result result;
+    std::error_code ec;
+    const fs::path tempRoot = fs::temp_directory_path(ec);
+    if (ec || tempRoot.empty()) {
+        result.detail = L"无法定位临时目录。";
+        return result;
+    }
+
+    ScopedDirectory snapshot{tempRoot / (L"OpenEHub-diag-export-" +
+                                         std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                         Timestamp(L"%04u%02u%02u%02u%02u%02u"))};
+    fs::create_directories(snapshot.path, ec);
+    if (ec) {
+        result.detail = L"无法在临时目录中建立工作目录。";
+        return result;
+    }
+
+    std::vector<std::wstring> entries;
+
+    // 1. Write UTF-8 diagnostics report.
+    {
+        const fs::path diagPath = snapshot.path / L"diagnostics.txt";
+        std::ofstream out(diagPath, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            result.detail = L"无法写出诊断报告文件。";
+            return result;
+        }
+        const unsigned char bom[]{0xEF, 0xBB, 0xBF};
+        out.write(reinterpret_cast<const char*>(bom), sizeof(bom));
+        const int utf8Len = WideCharToMultiByte(
+            CP_UTF8, 0, diagnosticsReport.c_str(), static_cast<int>(diagnosticsReport.size()),
+            nullptr, 0, nullptr, nullptr);
+        if (utf8Len > 0) {
+            std::string utf8(static_cast<size_t>(utf8Len), '\0');
+            WideCharToMultiByte(
+                CP_UTF8, 0, diagnosticsReport.c_str(), static_cast<int>(diagnosticsReport.size()),
+                utf8.data(), utf8Len, nullptr, nullptr);
+            out.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
+        }
+        entries.push_back(L"diagnostics.txt");
+    }
+
+    // 2. Include battery profile backup if present.
+    PWSTR localAppData = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData)) && localAppData) {
+        const fs::path profileJson = fs::path{localAppData} / L"opene-hub" / L"profiles" / L"battery-profile.json";
+        CoTaskMemFree(localAppData);
+        if (fs::exists(profileJson, ec) &&
+            CopyWhileOpen(profileJson, snapshot.path / L"battery-profile.json")) {
+            entries.push_back(L"battery-profile.json");
+        }
+    }
+
+    // 3. Optionally include Huawei display/vendor logs if requested.
+    if (includeVendorLogs) {
+        PWSTR programData = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramData, 0, nullptr, &programData)) && programData) {
+            const fs::path pdRoot{programData};
+            CoTaskMemFree(programData);
+            const fs::path lcdLogDir = pdRoot / L"Huawei" / L"HwLcdEnhancement";
+            size_t copied = 0;
+            if (fs::exists(lcdLogDir, ec)) {
+                fs::create_directories(snapshot.path / L"vendor-display", ec);
+                for (const auto& entry : fs::directory_iterator(lcdLogDir, ec)) {
+                    if (!entry.is_regular_file(ec)) continue;
+                    const auto ext = entry.path().extension().wstring();
+                    if (_wcsicmp(ext.c_str(), L".log") != 0 && _wcsicmp(ext.c_str(), L".txt") != 0) continue;
+                    if (CopyTailWhileOpen(entry.path(),
+                                          snapshot.path / L"vendor-display" / entry.path().filename(),
+                                          2ull * 1024 * 1024)) {
+                        ++copied;
+                    }
+                    if (copied >= 4) break;
+                }
+            }
+            if (copied > 0) entries.push_back(L"vendor-display");
+        }
+    }
+
+    fs::remove(destinationZip, ec);
+    if (!RunTar(destinationZip, snapshot.path, entries, result.detail)) {
+        return result;
+    }
+    if (!fs::exists(destinationZip, ec) || fs::file_size(destinationZip, ec) == 0) {
+        result.detail = L"打包程序没有写出文件。";
+        return result;
+    }
     result.status = Status::Success;
     return result;
 }
