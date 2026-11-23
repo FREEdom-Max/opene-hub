@@ -144,37 +144,31 @@ int RunHosted(DWORD parentPid, const wchar_t *stopEventName, bool verbose) {
 
     service.RequestRefresh();
 
-    HANDLE waits[2];
+#if defined(_M_X64) && !defined(_M_ARM64EC)
+    HANDLE notifyEvent = CreateEventW(nullptr, FALSE, FALSE,
+                                      Gaokun::Channel::kAccessoryChangedEventName);
+    const DWORD waitTimeoutMs = INFINITE;
+#else
+    HANDLE notifyEvent = nullptr;
+    const DWORD waitTimeoutMs = 1000;
+#endif
+
+    HANDLE waits[5];
     DWORD waitCount = 0;
     if (stopEvent) waits[waitCount++] = stopEvent;
     if (parent) waits[waitCount++] = parent;
+    const DWORD exitHandleCount = waitCount;
+    if (HANDLE h = static_cast<HANDLE>(service.UpdateEvent())) waits[waitCount++] = h;
+    if (HANDLE h = events.WaitHandle()) waits[waitCount++] = h;
+    if (HANDLE h = commands.WaitHandle()) waits[waitCount++] = h;
 
-    // 整表刷新只在启动和键盘接上时各做一次，其余靠 MCU 的推送。这里曾经每 5 秒查 9 项，
-    // 与笔宿主一起构成 MCU 上的持续查询流量，见 PenHostMain.cpp。
-    const DWORD tickMs = 200;
-    // 心跳每秒一次。周期要明显短于服务侧判定宿主失联的窗口，又不必细到每个 tick——
-    // 快照本身没变时，发布只是为了让读者看见心跳在动。
-    const int ticksPerHeartbeat = 1000 / static_cast<int>(tickMs);
-    int sincePublish = 0;
     uint32_t heartbeat = 0;
     Snapshot lastPublished{};
     bool wasConnected = false;
     bool everPublished = false;
+    ULONGLONG lastPublishTick = 0;
 
     for (;;) {
-        if (waitCount > 0) {
-            const DWORD signalled = WaitForMultipleObjects(waitCount, waits, FALSE, tickMs);
-            if (signalled != WAIT_TIMEOUT) {
-                // 哪个句柄先亮决定了这次退出是「被要求停」还是「父进程没了」。
-                HOST_LOG_INFO("wait returned %lu (%s)", signalled,
-                              (stopEvent && signalled == WAIT_OBJECT_0) ? "stop event"
-                                                                       : "parent exited");
-                break;
-            }
-        } else {
-            Sleep(tickMs);
-        }
-
         events.PollForReader();
         commands.PollForWriter();
 
@@ -183,10 +177,12 @@ int RunHosted(DWORD parentPid, const wchar_t *stopEventName, bool verbose) {
             HandleCommand(service, events, command, verbose);
         }
 
+        bool sentAnyEvent = false;
         Event event{};
         while (service.PopEvent(event)) {
             if (verbose) wprintf(L"event kind=%u value=%d\n", event.kind, event.value);
             (void)events.Send(event);
+            sentAnyEvent = true;
         }
 
         Snapshot current = service.GetSnapshot();
@@ -197,20 +193,41 @@ int RunHosted(DWORD parentPid, const wchar_t *stopEventName, bool verbose) {
         wasConnected = connected;
         const bool changed =
             !everPublished || current.updatedAtUnixMs != lastPublished.updatedAtUnixMs;
-        if (changed || ++sincePublish >= ticksPerHeartbeat) {
-            sincePublish = 0;
+        const ULONGLONG now = GetTickCount64();
+        const bool needHeartbeat =
+            (waitTimeoutMs != INFINITE) && (now - lastPublishTick >= waitTimeoutMs);
+        if (changed || needHeartbeat) {
             current.heartbeat = ++heartbeat;
             snapshots.Publish(current);
             lastPublished = current;
             everPublished = true;
+            lastPublishTick = now;
             if (verbose && changed) {
                 wprintf(L"snapshot flags=0x%08x battery=%u module=%u\n", current.flags,
                         current.battery, current.moduleId);
             }
         }
+        if ((changed || sentAnyEvent) && notifyEvent) {
+            (void)SetEvent(notifyEvent);
+        }
+
+        if (waitCount > 0) {
+            const DWORD signalled = WaitForMultipleObjects(waitCount, waits, FALSE, waitTimeoutMs);
+            if (signalled >= WAIT_OBJECT_0 && signalled < WAIT_OBJECT_0 + exitHandleCount) {
+                // 哪个句柄先亮决定了这次退出是「被要求停」还是「父进程没了」。
+                HOST_LOG_INFO("wait returned %lu (%s)", signalled,
+                              (stopEvent && signalled == WAIT_OBJECT_0) ? "stop event"
+                                                                        : "parent exited");
+                break;
+            }
+            if (signalled == WAIT_FAILED) break;
+        } else {
+            Sleep(waitTimeoutMs == INFINITE ? 1000 : waitTimeoutMs);
+        }
     }
 
     HOST_LOG_INFO("stopping");
+    if (notifyEvent) CloseHandle(notifyEvent);
     if (stopEvent) CloseHandle(stopEvent);
     if (parent) CloseHandle(parent);
     return 0;

@@ -48,6 +48,7 @@ Snapshot g_snapshot{};
 std::deque<Event> g_events;
 HANDLE g_detachReply = nullptr;
 volatile LONG g_detachValue = 0;
+HANDLE g_updateEvent = nullptr;
 
 // 队列有界。读者未连接或读得慢时丢最旧的：键盘事件都是即时语义，补投一条几秒前的插拔
 // 没有意义，反而会让界面在恢复连接的瞬间连闪几下。
@@ -71,12 +72,18 @@ void SetFlag(Flag flag, bool on) noexcept {
     }
 }
 
-void Touch() noexcept { g_snapshot.updatedAtUnixMs = NowUnixMs(); }
+void Touch() noexcept {
+    g_snapshot.updatedAtUnixMs = NowUnixMs();
+    if (g_updateEvent) (void)SetEvent(g_updateEvent);
+}
 
 void PushEvent(EventKind kind, int32_t value) noexcept {
-    std::lock_guard<std::mutex> guard(g_mutex);
-    if (g_events.size() >= kMaxQueued) g_events.pop_front();
-    g_events.push_back(Event{static_cast<uint32_t>(kind), value, NowUnixMs()});
+    {
+        std::lock_guard<std::mutex> guard(g_mutex);
+        if (g_events.size() >= kMaxQueued) g_events.pop_front();
+        g_events.push_back(Event{static_cast<uint32_t>(kind), value, NowUnixMs()});
+    }
+    if (g_updateEvent) (void)SetEvent(g_updateEvent);
 }
 
 void CopyText(GetTextFn fn, char *dst, int32_t capacity) noexcept {
@@ -306,6 +313,9 @@ bool Service::Start() noexcept {
     RegisterOptional(dll, "RegisterCallbackKeyboardFirstBatAfterConn", &OnFirstBattery);
 
     g_detachReply = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!g_updateEvent) {
+        g_updateEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    }
 
     m_procThread = CreateThread(nullptr, 0, ProcPipeThread, nullptr, 0, nullptr);
     m_interruptThread = CreateThread(nullptr, 0, InterruptPipeThread, nullptr, 0, nullptr);
@@ -339,6 +349,8 @@ bool Service::PopEvent(Event &out) noexcept {
     g_events.pop_front();
     return true;
 }
+
+void *Service::UpdateEvent() const noexcept { return g_updateEvent; }
 
 void Service::SetDetachSupport(bool enable) noexcept {
     if (g_api.detachSupportSet) g_api.detachSupportSet(enable ? 1 : 0);

@@ -30,6 +30,9 @@ public:
     [[nodiscard]] Snapshot GetSnapshot() const noexcept;
     [[nodiscard]] bool PopEvent(Event &out) noexcept;
 
+    // 任一回调更新快照或写入离散事件时置位的自动复位事件（HANDLE），供主循环阻塞等待。
+    [[nodiscard]] void *UpdateEvent() const noexcept;
+
     // 分离后无线连接开关。原厂不等回应，写入是否生效要靠随后的快照或事件确认。
     void SetDetachSupport(bool enable) noexcept;
 

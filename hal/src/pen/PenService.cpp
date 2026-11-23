@@ -50,6 +50,7 @@ Api g_api{};
 std::mutex g_mutex;
 Snapshot g_snapshot{};
 std::deque<Event> g_events;
+HANDLE g_updateEvent = nullptr;
 
 // 队列有界。UI 未连接或读得慢时丢最旧的：笔的事件都是即时语义，补投一条几秒前的
 // 侧键按下没有意义，反而会让界面在恢复连接的瞬间连闪几下。
@@ -74,12 +75,18 @@ void SetFlag(Flag flag, bool on) noexcept {
     }
 }
 
-void Touch() noexcept { g_snapshot.updatedAtUnixMs = NowUnixMs(); }
+void Touch() noexcept {
+    g_snapshot.updatedAtUnixMs = NowUnixMs();
+    if (g_updateEvent) (void)SetEvent(g_updateEvent);
+}
 
 void PushEvent(EventKind kind, int32_t value) noexcept {
-    std::lock_guard<std::mutex> guard(g_mutex);
-    if (g_events.size() >= kMaxQueued) g_events.pop_front();
-    g_events.push_back(Event{static_cast<uint32_t>(kind), value, NowUnixMs()});
+    {
+        std::lock_guard<std::mutex> guard(g_mutex);
+        if (g_events.size() >= kMaxQueued) g_events.pop_front();
+        g_events.push_back(Event{static_cast<uint32_t>(kind), value, NowUnixMs()});
+    }
+    if (g_updateEvent) (void)SetEvent(g_updateEvent);
 }
 
 // 取回一段窄字符串。与 THP 的 GetMESSAGE 同形：传入容量，按引用收回实际长度。
@@ -326,6 +333,10 @@ bool Service::Start() noexcept {
     RegisterOptional(dll, "RegisterCallbackPenCloseConnectWindow", &OnCloseConnectWindow);
     RegisterOptional(dll, "RegisterCallBackTransferPenMode", &OnTransferPenMode);
 
+    if (!g_updateEvent) {
+        g_updateEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    }
+
     m_procThread = CreateThread(nullptr, 0, ProcPipeThread, nullptr, 0, nullptr);
     m_interruptThread = CreateThread(nullptr, 0, InterruptPipeThread, nullptr, 0, nullptr);
     if (!m_procThread || !m_interruptThread) return false;
@@ -356,6 +367,8 @@ bool Service::PopEvent(Event &out) noexcept {
     g_events.pop_front();
     return true;
 }
+
+void *Service::UpdateEvent() const noexcept { return g_updateEvent; }
 
 void Service::SetKeyFunc(int32_t func) noexcept {
     if (g_api.setKeyFunc) g_api.setKeyFunc(func);

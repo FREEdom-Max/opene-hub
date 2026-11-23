@@ -12,6 +12,7 @@
 namespace Gaokun::Channel {
 
 inline constexpr uint32_t kAbiVersion = 1;
+inline constexpr wchar_t kAccessoryChangedEventName[] = L"Local\\OpenEHubAccessoryChanged";
 
 // 共享内存的线路格式。写者在 ARM64EC 的宿主里，读者在原生 ARM64 的调用方里，两侧都实例化
 // 同一个模板，因此只用固定宽度类型，不依赖任一侧编译器的填充规则。
@@ -35,6 +36,8 @@ struct SharedBlock {
                                               SECURITY_DESCRIPTOR &sd) noexcept {
 #if defined(_M_X64) && !defined(_M_ARM64EC)
     // The x64 UI and both accessory hosts run as the same user.
+    (void)sa;
+    (void)sd;
     return false; // Caller uses the process token's default DACL.
 #else
     if (!InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION)) return false;
@@ -183,8 +186,14 @@ class EventPipeWriter {
 public:
     EventPipeWriter() noexcept = default;
     ~EventPipeWriter() noexcept {
+        m_closing = true;
         CloseClient();
-        if (m_pipe && m_pipe != INVALID_HANDLE_VALUE) CloseHandle(m_pipe);
+        if (m_pipe && m_pipe != INVALID_HANDLE_VALUE) {
+            (void)CancelIo(m_pipe);
+            CloseHandle(m_pipe);
+        }
+        if (m_connectEvent) CloseHandle(m_connectEvent);
+        if (m_writeEvent) CloseHandle(m_writeEvent);
     }
 
     EventPipeWriter(const EventPipeWriter &) = delete;
@@ -195,32 +204,66 @@ public:
         SECURITY_DESCRIPTOR sd{};
         const bool haveSecurity = BuildSharedSecurity(sa, sd);
 
-        // 非阻塞：宿主的主循环不能因为没有读者而停住，事件仍要继续被消费。
-        HANDLE pipe = CreateNamedPipeW(name, PIPE_ACCESS_OUTBOUND,
-                                       PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT,
-                                       1, sizeof(Event) * 64, sizeof(Event) * 64, 0,
-                                       haveSecurity ? &sa : nullptr);
+        HANDLE pipe = CreateNamedPipeW(
+            name, PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+            1, sizeof(Event) * 64, sizeof(Event) * 64, 0,
+            haveSecurity ? &sa : nullptr);
         if (pipe == INVALID_HANDLE_VALUE) return false;
+
+        m_connectEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        m_writeEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!m_connectEvent || !m_writeEvent) {
+            CloseHandle(pipe);
+            if (m_connectEvent) { CloseHandle(m_connectEvent); m_connectEvent = nullptr; }
+            if (m_writeEvent) { CloseHandle(m_writeEvent); m_writeEvent = nullptr; }
+            return false;
+        }
         m_pipe = pipe;
+        StartConnect();
         return true;
     }
 
+    [[nodiscard]] HANDLE WaitHandle() const noexcept { return m_connectEvent; }
+
     void PollForReader() noexcept {
         if (!m_pipe || m_pipe == INVALID_HANDLE_VALUE || m_connected) return;
-        if (ConnectNamedPipe(m_pipe, nullptr)) {
-            m_connected = true;
-            return;
+        if (m_connecting) {
+            DWORD transferred = 0;
+            if (GetOverlappedResult(m_pipe, &m_connectOv, &transferred, FALSE)) {
+                m_connecting = false;
+                m_connected = true;
+                (void)ResetEvent(m_connectEvent);
+                return;
+            }
+            if (GetLastError() == ERROR_IO_INCOMPLETE) return;
+            m_connecting = false;
+            (void)ResetEvent(m_connectEvent);
         }
-        if (GetLastError() == ERROR_PIPE_CONNECTED) m_connected = true;
-        // ERROR_PIPE_LISTENING 表示还没有读者，属正常。
+        StartConnect();
     }
 
     bool Send(const Event &event) noexcept {
         if (!m_pipe || m_pipe == INVALID_HANDLE_VALUE || !m_connected) return false;
+        OVERLAPPED ov{};
+        ov.hEvent = m_writeEvent;
+        (void)ResetEvent(m_writeEvent);
+
         DWORD written = 0;
-        if (WriteFile(m_pipe, &event, sizeof(event), &written, nullptr) &&
-            written == sizeof(event)) {
-            return true;
+        if (WriteFile(m_pipe, &event, sizeof(event), &written, &ov)) {
+            if (written == sizeof(event)) return true;
+            CloseClient();
+            return false;
+        }
+        if (GetLastError() == ERROR_IO_PENDING) {
+            if (WaitForSingleObject(m_writeEvent, 50) == WAIT_OBJECT_0 &&
+                GetOverlappedResult(m_pipe, &ov, &written, FALSE) &&
+                written == sizeof(event)) {
+                return true;
+            }
+            (void)CancelIoEx(m_pipe, &ov);
+            DWORD ignored = 0;
+            (void)GetOverlappedResult(m_pipe, &ov, &ignored, TRUE);
         }
         // 读者断开了。回到监听态，好让下一个读者能连上，而不是从此静默。
         CloseClient();
@@ -228,16 +271,49 @@ public:
     }
 
 private:
-    void CloseClient() noexcept {
-        if (m_pipe && m_pipe != INVALID_HANDLE_VALUE && m_connected) {
-            (void)FlushFileBuffers(m_pipe);
-            (void)DisconnectNamedPipe(m_pipe);
+    void StartConnect() noexcept {
+        if (m_closing || !m_pipe || m_pipe == INVALID_HANDLE_VALUE || m_connected || m_connecting) {
+            return;
         }
-        m_connected = false;
+        (void)ResetEvent(m_connectEvent);
+        m_connectOv = {};
+        m_connectOv.hEvent = m_connectEvent;
+        if (ConnectNamedPipe(m_pipe, &m_connectOv)) {
+            m_connected = true;
+            return;
+        }
+        const DWORD err = GetLastError();
+        if (err == ERROR_PIPE_CONNECTED) {
+            m_connected = true;
+        } else if (err == ERROR_IO_PENDING) {
+            m_connecting = true;
+        }
+    }
+
+    void CloseClient() noexcept {
+        if (m_pipe && m_pipe != INVALID_HANDLE_VALUE) {
+            if (m_connecting) {
+                (void)CancelIoEx(m_pipe, &m_connectOv);
+                DWORD ignored = 0;
+                (void)GetOverlappedResult(m_pipe, &m_connectOv, &ignored, TRUE);
+                m_connecting = false;
+            }
+            if (m_connected) {
+                (void)DisconnectNamedPipe(m_pipe);
+                m_connected = false;
+            }
+        }
+        if (m_connectEvent) (void)ResetEvent(m_connectEvent);
+        if (!m_closing) StartConnect();
     }
 
     HANDLE m_pipe = nullptr;
+    HANDLE m_connectEvent = nullptr;
+    HANDLE m_writeEvent = nullptr;
+    OVERLAPPED m_connectOv{};
     bool m_connected = false;
+    bool m_connecting = false;
+    bool m_closing = false;
 };
 
 template <typename Event>
@@ -275,14 +351,19 @@ private:
 };
 
 // 下行命令管道。宿主是服务端读者，控制进程是客户端写者；与上面的事件管道方向相反。
-// 两端都非阻塞，控制命令不能拖住宿主的 MCU 消息循环，宿主未就绪时调用方也只得到失败。
+// 采用重叠 I/O，宿主主循环可以直接阻塞在 WaitHandle() 上，无需定时轮询。
 template <typename Command>
 class CommandPipeReader {
 public:
     CommandPipeReader() noexcept = default;
     ~CommandPipeReader() noexcept {
+        m_closing = true;
         CloseClient();
-        if (m_pipe && m_pipe != INVALID_HANDLE_VALUE) CloseHandle(m_pipe);
+        if (m_pipe && m_pipe != INVALID_HANDLE_VALUE) {
+            (void)CancelIo(m_pipe);
+            CloseHandle(m_pipe);
+        }
+        if (m_event) CloseHandle(m_event);
     }
 
     CommandPipeReader(const CommandPipeReader &) = delete;
@@ -293,45 +374,142 @@ public:
         SECURITY_DESCRIPTOR sd{};
         const bool haveSecurity = BuildSharedSecurity(sa, sd);
 
-        HANDLE pipe = CreateNamedPipeW(name, PIPE_ACCESS_INBOUND,
-                                       PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT,
-                                       1, sizeof(Command) * 16, sizeof(Command) * 16, 0,
-                                       haveSecurity ? &sa : nullptr);
+        HANDLE pipe = CreateNamedPipeW(
+            name, PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+            1, sizeof(Command) * 16, sizeof(Command) * 16, 0,
+            haveSecurity ? &sa : nullptr);
         if (pipe == INVALID_HANDLE_VALUE) return false;
+
+        m_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!m_event) {
+            CloseHandle(pipe);
+            return false;
+        }
         m_pipe = pipe;
+        StartConnect();
         return true;
     }
 
+    [[nodiscard]] HANDLE WaitHandle() const noexcept { return m_event; }
+
     void PollForWriter() noexcept {
-        if (!m_pipe || m_pipe == INVALID_HANDLE_VALUE || m_connected) return;
-        if (ConnectNamedPipe(m_pipe, nullptr)) {
-            m_connected = true;
+        if (!m_pipe || m_pipe == INVALID_HANDLE_VALUE) return;
+        if (m_state == State::Connecting) {
+            DWORD transferred = 0;
+            if (GetOverlappedResult(m_pipe, &m_ov, &transferred, FALSE)) {
+                (void)ResetEvent(m_event);
+                m_state = State::ConnectedIdle;
+                StartRead();
+                return;
+            }
+            if (GetLastError() == ERROR_IO_INCOMPLETE) return;
+            CloseClient();
             return;
         }
-        if (GetLastError() == ERROR_PIPE_CONNECTED) m_connected = true;
+        if (m_state == State::Disconnected) StartConnect();
     }
 
     [[nodiscard]] bool Poll(Command &out) noexcept {
-        if (!m_pipe || m_pipe == INVALID_HANDLE_VALUE || !m_connected) return false;
-        DWORD read = 0;
-        if (ReadFile(m_pipe, &out, sizeof(out), &read, nullptr) && read == sizeof(out)) {
+        if (!m_pipe || m_pipe == INVALID_HANDLE_VALUE) return false;
+        if (m_hasReady) {
+            out = m_pending;
+            m_hasReady = false;
+            (void)ResetEvent(m_event);
+            StartRead();
             return true;
         }
+        if (m_state != State::Reading) return false;
+        DWORD read = 0;
+        if (GetOverlappedResult(m_pipe, &m_ov, &read, FALSE)) {
+            (void)ResetEvent(m_event);
+            m_state = State::ConnectedIdle;
+            if (read == sizeof(Command)) {
+                out = m_pending;
+                StartRead();
+                return true;
+            }
+            StartRead();
+            return false;
+        }
         const DWORD error = GetLastError();
-        if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED) CloseClient();
+        if (error == ERROR_IO_INCOMPLETE) return false;
+        CloseClient();
         return false;
     }
 
 private:
-    void CloseClient() noexcept {
-        if (m_pipe && m_pipe != INVALID_HANDLE_VALUE && m_connected) {
-            (void)DisconnectNamedPipe(m_pipe);
+    enum class State { Disconnected, Connecting, ConnectedIdle, Reading };
+
+    void StartConnect() noexcept {
+        if (m_closing || !m_pipe || m_pipe == INVALID_HANDLE_VALUE) return;
+        (void)ResetEvent(m_event);
+        m_ov = {};
+        m_ov.hEvent = m_event;
+        if (ConnectNamedPipe(m_pipe, &m_ov)) {
+            m_state = State::ConnectedIdle;
+            StartRead();
+            return;
         }
-        m_connected = false;
+        const DWORD err = GetLastError();
+        if (err == ERROR_PIPE_CONNECTED) {
+            m_state = State::ConnectedIdle;
+            StartRead();
+        } else if (err == ERROR_IO_PENDING) {
+            m_state = State::Connecting;
+        } else {
+            m_state = State::Disconnected;
+        }
+    }
+
+    void StartRead() noexcept {
+        if (m_closing || !m_pipe || m_pipe == INVALID_HANDLE_VALUE) return;
+        (void)ResetEvent(m_event);
+        m_ov = {};
+        m_ov.hEvent = m_event;
+        DWORD read = 0;
+        if (ReadFile(m_pipe, &m_pending, sizeof(Command), &read, &m_ov)) {
+            if (read == sizeof(Command)) {
+                m_hasReady = true;
+                m_state = State::ConnectedIdle;
+                (void)SetEvent(m_event);
+                return;
+            }
+            CloseClient();
+            return;
+        }
+        const DWORD err = GetLastError();
+        if (err == ERROR_IO_PENDING) {
+            m_state = State::Reading;
+        } else {
+            CloseClient();
+        }
+    }
+
+    void CloseClient() noexcept {
+        if (m_pipe && m_pipe != INVALID_HANDLE_VALUE) {
+            if (m_state == State::Connecting || m_state == State::Reading) {
+                (void)CancelIoEx(m_pipe, &m_ov);
+                DWORD ignored = 0;
+                (void)GetOverlappedResult(m_pipe, &m_ov, &ignored, TRUE);
+            }
+            if (m_state == State::ConnectedIdle || m_state == State::Reading) {
+                (void)DisconnectNamedPipe(m_pipe);
+            }
+        }
+        m_state = State::Disconnected;
+        m_hasReady = false;
+        if (m_event) (void)ResetEvent(m_event);
+        if (!m_closing) StartConnect();
     }
 
     HANDLE m_pipe = nullptr;
-    bool m_connected = false;
+    HANDLE m_event = nullptr;
+    OVERLAPPED m_ov{};
+    Command m_pending{};
+    State m_state = State::Disconnected;
+    bool m_hasReady = false;
+    bool m_closing = false;
 };
 
 template <typename Command>

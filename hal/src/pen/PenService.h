@@ -32,6 +32,9 @@ public:
     // 取一条离散事件，队列为空时返回 false。
     [[nodiscard]] bool PopEvent(Event &out) noexcept;
 
+    // 任一回调更新快照或写入离散事件时置位的自动复位事件（HANDLE），供主循环阻塞等待。
+    [[nodiscard]] void *UpdateEvent() const noexcept;
+
     // 设置侧键功能。原厂同样不等回应，写入是否生效要靠随后的 KeyFuncChanged 事件确认。
     void SetKeyFunc(int32_t func) noexcept;
 
