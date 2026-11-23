@@ -15,16 +15,20 @@ inline constexpr wchar_t kGlobalMappingName[] = L"Global\\OpenEHubHwState";
 inline constexpr wchar_t kLocalMappingName[] = L"Local\\OpenEHubHwState";
 inline constexpr wchar_t kGlobalPipeName[] = L"\\\\.\\pipe\\OpenEHubHwControl";
 inline constexpr wchar_t kLocalPipeName[] = L"\\\\.\\pipe\\OpenEHubHwControlLocal";
+inline constexpr wchar_t kGlobalFnPEventName[] = L"Global\\OpenEHubFnPHotkey";
+inline constexpr wchar_t kLocalFnPEventName[] = L"Local\\OpenEHubFnPHotkey";
 
 inline constexpr uint32_t kMagic = 0x4F454857u; // "OEHW"
-inline constexpr uint32_t kVersion = 1u;
+inline constexpr uint32_t kVersion = 2u;
 
 namespace Flag {
-inline constexpr uint32_t kHasFan      = 1u << 0;
-inline constexpr uint32_t kHasCpuTemp  = 1u << 1;
-inline constexpr uint32_t kHasCharge   = 1u << 2;
+inline constexpr uint32_t kHasFan       = 1u << 0;
+inline constexpr uint32_t kHasCpuTemp   = 1u << 1;
+inline constexpr uint32_t kHasCharge    = 1u << 2;
 inline constexpr uint32_t kChargeManual = 1u << 3;
-inline constexpr uint32_t kServiceMode = 1u << 4;
+inline constexpr uint32_t kServiceMode  = 1u << 4;
+inline constexpr uint32_t kHasTurbo     = 1u << 5;
+inline constexpr uint32_t kTurboActive  = 1u << 6;
 } // namespace Flag
 
 struct SharedState {
@@ -40,6 +44,8 @@ struct SharedState {
     uint8_t chargeStopPercent;
     uint64_t sampleTickMs;
     uint32_t hostPid;
+    uint32_t fnPSeq;
+    uint32_t fnPEventCode;
     uint32_t reserved;
 };
 
@@ -53,12 +59,16 @@ struct Snapshot {
     uint8_t chargeStopPercent = 70;
     uint64_t sampleTickMs = 0;
     uint32_t hostPid = 0;
+    uint32_t fnPSeq = 0;
+    uint32_t fnPEventCode = 0;
 
     [[nodiscard]] bool HasFan() const noexcept { return (flags & Flag::kHasFan) != 0; }
     [[nodiscard]] bool HasCpuTemp() const noexcept { return (flags & Flag::kHasCpuTemp) != 0; }
     [[nodiscard]] bool HasCharge() const noexcept { return (flags & Flag::kHasCharge) != 0; }
     [[nodiscard]] bool ChargeManual() const noexcept { return (flags & Flag::kChargeManual) != 0; }
     [[nodiscard]] bool IsServiceMode() const noexcept { return (flags & Flag::kServiceMode) != 0; }
+    [[nodiscard]] bool HasTurbo() const noexcept { return (flags & Flag::kHasTurbo) != 0; }
+    [[nodiscard]] bool TurboActive() const noexcept { return (flags & Flag::kTurboActive) != 0; }
 };
 
 enum class CommandKind : uint32_t {
@@ -66,6 +76,8 @@ enum class CommandKind : uint32_t {
     RefreshCharge = 2,
     SetSmartCharge = 3,
     SetChargeLimit = 4,
+    SetTurboMode = 5,
+    RefreshTurbo = 6,
 };
 
 struct CommandRequest {
@@ -191,6 +203,29 @@ public:
         return running;
     }
 
+    static bool IsVendorPowerServiceRunning() noexcept {
+        SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+        if (!scm) return false;
+        SC_HANDLE svc = OpenServiceW(scm, L"MBAMainService", SERVICE_QUERY_STATUS);
+        bool running = false;
+        if (svc) {
+            SERVICE_STATUS status{};
+            if (QueryServiceStatus(svc, &status)) {
+                running = (status.dwCurrentState == SERVICE_RUNNING ||
+                           status.dwCurrentState == SERVICE_START_PENDING);
+            }
+            CloseServiceHandle(svc);
+        }
+        CloseServiceHandle(scm);
+        return running;
+    }
+
+    static HANDLE OpenFnPEvent() noexcept {
+        HANDLE h = OpenEventW(SYNCHRONIZE, FALSE, kGlobalFnPEventName);
+        if (!h) h = OpenEventW(SYNCHRONIZE, FALSE, kLocalFnPEventName);
+        return h;
+    }
+
 private:
     bool EnsureMapped() noexcept {
         if (m_view) {
@@ -251,6 +286,8 @@ private:
             copy.chargeStopPercent = m_view->chargeStopPercent;
             copy.sampleTickMs = m_view->sampleTickMs;
             copy.hostPid = m_view->hostPid;
+            copy.fnPSeq = m_view->fnPSeq;
+            copy.fnPEventCode = m_view->fnPEventCode;
             MemoryBarrier();
             const LONG s2 = ReadAcquire(&m_view->seq);
             if (s1 == s2) {

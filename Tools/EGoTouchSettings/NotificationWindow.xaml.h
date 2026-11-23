@@ -16,6 +16,7 @@ struct NotificationWindow : NotificationWindowT<NotificationWindow> {
     void UpdateState(const PenStatus::State& state);
     void ShowDeviation();
     void ShowToolChanged(bool eraser);
+    void ShowPowerMode(int tier, bool turboActive);
     void ApplyTheme(Microsoft::UI::Xaml::ElementTheme theme);
     void HideNotification();
     bool NeedsStateRefresh() const noexcept;
@@ -38,6 +39,7 @@ private:
     void RestartDwellTimer();
     void ApplyConnectedState(const PenStatus::State& state);
     void ApplyKeyboardState(const PenStatus::State& state);
+    void ApplyPowerModeState(int tier, bool turboActive);
     void ApplyNoUpscaleSize(
         Microsoft::UI::Xaml::Controls::Image const& image,
         Windows::Foundation::Size const& pixelSize,
@@ -70,6 +72,8 @@ private:
     bool m_presented = false;
     bool m_connectionView = false;
     bool m_shutdown = false;
+    int m_powerModeTier = 1;
+    bool m_powerModeTurbo = false;
     std::function<void()> m_onRefreshDemandChanged;
     uint32_t m_penModelId = 0;
     uint64_t m_penImageGeneration = 0;

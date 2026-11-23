@@ -46,6 +46,7 @@ namespace {
 
 constexpr UINT kMsgAccessoryChanged = WM_APP + 254;
 constexpr UINT kMsgPowerModeChanged = WM_APP + 255;
+constexpr UINT kMsgFnPHotkey = WM_APP + 256;
 constexpr UINT_PTR kTrayHoverTimerId = 0x4F45;
 constexpr wchar_t kAccessoryChangedEventName[] = L"Local\\OpenEHubAccessoryChanged";
 constexpr GUID kGuidDevInterfaceHid = {
@@ -413,6 +414,8 @@ MainWindow::MainWindow() {
         m_freqBinder.Start([mainHwnd]() {
             if (mainHwnd) (void)PostMessageW(mainHwnd, kMsgPowerModeChanged, 0, 0);
         });
+        EnsureFnPHotkeyWaitRegistered();
+        SyncHuaweiTurboForCurrentMode();
 
         // 若已启用开机自启，自动迁移旧版（缺 --background）或移动目录后的启动路径。
         wchar_t existingRun[1024]{};
@@ -442,6 +445,7 @@ MainWindow::MainWindow() {
             KillTimer(hwnd, kTrayHoverTimerId);
         }
         m_trayHoverArmed = false;
+        UnregisterFnPHotkeyWait();
         if (m_accessoryNotifyWait) {
             (void)UnregisterWaitEx(m_accessoryNotifyWait, INVALID_HANDLE_VALUE);
             m_accessoryNotifyWait = nullptr;
@@ -453,6 +457,10 @@ MainWindow::MainWindow() {
         if (m_hidDevNotify) {
             (void)UnregisterDeviceNotification(m_hidDevNotify);
             m_hidDevNotify = nullptr;
+        }
+        if (m_turboEngagedByUs) {
+            (void)MateBookHw::Client::SendCommand(MateBookHw::CommandKind::SetTurboMode, 0, nullptr, 1500);
+            m_turboEngagedByUs = false;
         }
         m_freqBinder.StopAndRestore();
 #endif
@@ -808,6 +816,167 @@ VOID CALLBACK MainWindow::OnAccessoryChangedCallback(PVOID parameter, BOOLEAN) {
     }
 }
 
+VOID CALLBACK MainWindow::OnFnPHotkeyCallback(PVOID parameter, BOOLEAN) {
+    if (const auto hwnd = static_cast<HWND>(parameter)) {
+        (void)PostMessageW(hwnd, kMsgFnPHotkey, 0, 0);
+    }
+}
+
+void MainWindow::UnregisterFnPHotkeyWait() {
+    if (m_fnPWait) {
+        (void)UnregisterWaitEx(m_fnPWait, INVALID_HANDLE_VALUE);
+        m_fnPWait = nullptr;
+    }
+    if (m_fnPEvent) {
+        CloseHandle(m_fnPEvent);
+        m_fnPEvent = nullptr;
+    }
+    m_fnPHostPid = 0;
+}
+
+void MainWindow::EnsureFnPHotkeyWaitRegistered() {
+    if (!m_matebookE || m_closed) return;
+    MateBookHw::Snapshot snap{};
+    const bool haveSnap = m_hwClient.ReadSnapshot(snap);
+    if (haveSnap) {
+        m_hwSnapshot = snap;
+        m_hasHwSnapshot = true;
+        if (m_lastFnPSeq == 0 && snap.fnPSeq != 0) {
+            m_lastFnPSeq = snap.fnPSeq;
+        }
+    }
+    if (m_fnPWait && (!haveSnap || snap.hostPid == m_fnPHostPid)) {
+        return;
+    }
+    UnregisterFnPHotkeyWait();
+    HANDLE ev = MateBookHw::Client::OpenFnPEvent();
+    if (!ev) return;
+    HANDLE wait = nullptr;
+    if (!RegisterWaitForSingleObject(
+            &wait, ev, &MainWindow::OnFnPHotkeyCallback, WindowHandle(),
+            INFINITE, WT_EXECUTEDEFAULT)) {
+        CloseHandle(ev);
+        return;
+    }
+    m_fnPEvent = ev;
+    m_fnPWait = wait;
+    m_fnPHostPid = haveSnap ? snap.hostPid : 0;
+}
+
+void MainWindow::ShowPowerModeHud(int tier, bool turboActive) {
+    if (m_closed) return;
+    if (!m_notificationWindow) {
+        m_notificationWindow = make<winrt::EGoTouchSettings::implementation::NotificationWindow>();
+        get_self<implementation::NotificationWindow>(m_notificationWindow)->SetRefreshDemandChanged(
+            [this] { UpdateRefreshPolicy(); });
+    }
+    auto impl = get_self<implementation::NotificationWindow>(m_notificationWindow);
+    impl->ApplyTheme(RootLayout().RequestedTheme());
+    impl->ShowPowerMode(tier, turboActive);
+}
+
+void MainWindow::SyncHuaweiTurboForCurrentMode() {
+    if (!m_matebookE || m_closed) return;
+    if (MateBookHw::Client::IsVendorPowerServiceRunning()) return;
+    const auto overlay = PowerOverlay::Query();
+    const bool wantTurbo =
+        !overlay.energySaverActive && overlay.mode == PowerOverlay::Mode::BestPerformance;
+    if (m_lastSyncedTurboValid && m_lastSyncedTurbo == wantTurbo) return;
+    const int tier = overlay.energySaverActive || overlay.mode == PowerOverlay::Mode::BestEfficiency ? 0
+                   : overlay.mode == PowerOverlay::Mode::BestPerformance ? 2
+                   : 1;
+    SyncHuaweiTurboModeAsync(wantTurbo, false, tier);
+}
+
+fire_and_forget MainWindow::SyncHuaweiTurboModeAsync(bool enable, bool updateHudOnDone, int hudTier) {
+    auto lifetime = get_strong();
+    if (!m_matebookE || m_closed) co_return;
+    if (MateBookHw::Client::IsVendorPowerServiceRunning()) co_return;
+
+    const uint64_t gen = ++m_turboSyncGen;
+    m_lastSyncedTurboValid = true;
+    m_lastSyncedTurbo = enable;
+
+    apartment_context ui;
+    MateBookHw::CommandReply reply{};
+    bool ok = false;
+    try {
+        co_await resume_background();
+        ok = MateBookHw::Client::SendCommand(
+            MateBookHw::CommandKind::SetTurboMode, enable ? 1u : 0u, &reply, 2000);
+    } catch (...) {
+        ok = false;
+    }
+    co_await ui;
+    if (m_closed || gen != m_turboSyncGen) co_return;
+
+    if (ok) {
+        m_hwSnapshot = reply.snapshot;
+        m_hasHwSnapshot = true;
+        m_turboEngagedByUs = enable;
+    } else if (!enable) {
+        m_turboEngagedByUs = false;
+    }
+
+    if (updateHudOnDone && hudTier == 2 && m_notificationWindow && !(ok && enable)) {
+        ShowPowerModeHud(2, false);
+    }
+}
+
+void MainWindow::HandleFnPHotkey() {
+    if (!m_matebookE || m_closed) return;
+
+    MateBookHw::Snapshot snap{};
+    if (m_hwClient.ReadSnapshot(snap)) {
+        m_hwSnapshot = snap;
+        m_hasHwSnapshot = true;
+        if (snap.fnPSeq != 0 && snap.fnPSeq == m_lastFnPSeq) {
+            return;
+        }
+        m_lastFnPSeq = snap.fnPSeq;
+    }
+
+    // 华为电脑管家服务在运行时由原厂接管 Fn+P，OpenE hub 自动让位避免双重切换。
+    if (MateBookHw::Client::IsVendorPowerServiceRunning()) {
+        return;
+    }
+
+    const auto overlay = PowerOverlay::Query();
+    PowerOverlay::Mode nextMode = PowerOverlay::Mode::Balanced;
+    int nextTier = 1;
+    if (overlay.energySaverActive || overlay.mode == PowerOverlay::Mode::BestEfficiency) {
+        nextMode = PowerOverlay::Mode::Balanced;
+        nextTier = 1;
+    } else if (overlay.mode == PowerOverlay::Mode::Balanced) {
+        nextMode = PowerOverlay::Mode::BestPerformance;
+        nextTier = 2;
+    } else {
+        nextMode = PowerOverlay::Mode::BestEfficiency;
+        nextTier = 0;
+    }
+
+    if (overlay.energySaverActive) {
+        (void)PowerOverlay::SetEnergySaverActive(false);
+    }
+    if (!PowerOverlay::Apply(nextMode)) {
+        return;
+    }
+    m_freqBinder.SyncNow();
+
+    const bool wantTurbo = (nextMode == PowerOverlay::Mode::BestPerformance);
+    const bool optimisticTurbo = wantTurbo && (!m_hasHwSnapshot || m_hwSnapshot.HasTurbo() || m_hwSnapshot.IsServiceMode());
+    ShowPowerModeHud(nextTier, optimisticTurbo);
+    SyncHuaweiTurboModeAsync(wantTurbo, wantTurbo, nextTier);
+
+    if (m_mainUiInitialized) {
+        RefreshPowerModeControl();
+    }
+    if (m_quickFlyoutWindow &&
+        get_self<implementation::QuickFlyoutWindow>(m_quickFlyoutWindow)->IsVisible()) {
+        RefreshBatteryLive();
+    }
+}
+
 void MainWindow::InvalidateFlyoutHardwareCache() noexcept {
     m_lastFlyoutQueryTick = 0;
 }
@@ -818,6 +987,7 @@ void MainWindow::PollMateBookHardware(bool wakeSensors) {
     m_hasHwSnapshot = m_hwClient.ReadSnapshot(snap);
     if (m_hasHwSnapshot) {
         m_hwSnapshot = snap;
+        EnsureFnPHotkeyWaitRegistered();
         if (wakeSensors) {
             const ULONGLONG now = GetTickCount64();
             // OpenEHubHwService 单次唤醒后维持 6 秒采样，4 秒节流即可保证连续刷新且减半管道通信。
@@ -1300,12 +1470,28 @@ LRESULT CALLBACK MainWindow::MainWndProc(
     }
 #if defined(_M_X64) && !defined(_M_ARM64EC)
     if (self->m_matebookE && message == WM_ENDSESSION && wParam != 0) {
+        if (self->m_turboEngagedByUs) {
+            (void)MateBookHw::Client::SendCommand(MateBookHw::CommandKind::SetTurboMode, 0, nullptr, 1000);
+            self->m_turboEngagedByUs = false;
+        }
         self->m_freqBinder.StopAndRestore();
+    }
+    if (self->m_matebookE && message == kMsgFnPHotkey) {
+        try {
+            self->DispatcherQueue().TryEnqueue([weak = self->get_weak()]() {
+                if (const auto strong = weak.get(); strong && !strong->m_closed) {
+                    strong->HandleFnPHotkey();
+                }
+            });
+        } catch (...) {
+        }
+        return 0;
     }
     if (self->m_matebookE && message == kMsgPowerModeChanged) {
         try {
             self->DispatcherQueue().TryEnqueue([weak = self->get_weak()]() {
                 if (const auto strong = weak.get(); strong && !strong->m_closed) {
+                    strong->SyncHuaweiTurboForCurrentMode();
                     if (strong->m_mainUiInitialized) strong->RefreshPowerModeControl();
                     if (strong->m_quickFlyoutWindow &&
                         get_self<implementation::QuickFlyoutWindow>(strong->m_quickFlyoutWindow)->IsVisible()) {
@@ -2209,7 +2395,10 @@ void MainWindow::ToggleQuickFlyout(bool hasAnchor, int anchorX, int anchorY) {
         callbacks.setPowerMode = [this](PowerOverlay::Mode mode) {
             if (!PowerOverlay::Apply(mode)) return false;
 #if defined(_M_X64) && !defined(_M_ARM64EC)
-            if (m_matebookE) m_freqBinder.SyncNow();
+            if (m_matebookE) {
+                m_freqBinder.SyncNow();
+                SyncHuaweiTurboForCurrentMode();
+            }
 #endif
             if (m_mainUiInitialized) RefreshPowerModeControl();
             return true;
@@ -2229,7 +2418,10 @@ void MainWindow::ToggleQuickFlyout(bool hasAnchor, int anchorX, int anchorY) {
         callbacks.setEnergySaver = [this](bool enabled) {
             if (!PowerOverlay::SetEnergySaverActive(enabled)) return false;
 #if defined(_M_X64) && !defined(_M_ARM64EC)
-            if (m_matebookE) m_freqBinder.SyncNow();
+            if (m_matebookE) {
+                m_freqBinder.SyncNow();
+                SyncHuaweiTurboForCurrentMode();
+            }
 #endif
             if (m_mainUiInitialized) RefreshPowerModeControl();
             return true;
@@ -4997,7 +5189,10 @@ void MainWindow::PowerModeSelectionChanged(
         return;
     }
 #if defined(_M_X64) && !defined(_M_ARM64EC)
-    if (m_matebookE) m_freqBinder.SyncNow();
+    if (m_matebookE) {
+        m_freqBinder.SyncNow();
+        SyncHuaweiTurboForCurrentMode();
+    }
 #endif
     RefreshPowerModeControl();
 }
@@ -5010,7 +5205,10 @@ void MainWindow::EnergySaverToggled(IInspectable const&, RoutedEventArgs const&)
         return;
     }
 #if defined(_M_X64) && !defined(_M_ARM64EC)
-    if (m_matebookE) m_freqBinder.SyncNow();
+    if (m_matebookE) {
+        m_freqBinder.SyncNow();
+        SyncHuaweiTurboForCurrentMode();
+    }
 #endif
     RefreshPowerModeControl();
 }

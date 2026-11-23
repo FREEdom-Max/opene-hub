@@ -120,6 +120,102 @@
                            TextTrimming="CharacterEllipsis"
                            VerticalAlignment="Center" />
             </Grid>
+
+            <!-- 电源模式 / Fn+P 切换 HUD -->
+            <Grid x:Name="PowerModeView" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Grid ColumnSpacing="14" VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border x:Name="PowerModeIconBadge"
+                            Width="44"
+                            Height="44"
+                            CornerRadius="12"
+                            BorderThickness="1"
+                            VerticalAlignment="Center">
+                        <Grid>
+                            <FontIcon x:Name="PowerModeEcoIcon"
+                                      Glyph="&#xEC0A;"
+                                      FontSize="20"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center" />
+                            <FontIcon x:Name="PowerModeBalancedIcon"
+                                      Glyph="&#xEC49;"
+                                      FontSize="20"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"
+                                      Visibility="Collapsed" />
+                            <FontIcon x:Name="PowerModePerfIcon"
+                                      Glyph="&#xEC4A;"
+                                      FontSize="20"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"
+                                      Visibility="Collapsed" />
+                        </Grid>
+                    </Border>
+
+                    <StackPanel Grid.Column="1"
+                                Spacing="4"
+                                VerticalAlignment="Center">
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="PowerModeTitleText"
+                                       Text="平衡模式"
+                                       FontSize="15"
+                                       FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis"
+                                       VerticalAlignment="Center" />
+                            <Border x:Name="PowerModeTagBorder"
+                                    Grid.Column="1"
+                                    Padding="8,2"
+                                    CornerRadius="10"
+                                    BorderThickness="1"
+                                    VerticalAlignment="Center">
+                                <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                    <FontIcon x:Name="PowerModeTurboGlyph"
+                                              Glyph="&#xE945;"
+                                              FontSize="10"
+                                              VerticalAlignment="Center"
+                                              Visibility="Collapsed" />
+                                    <TextBlock x:Name="PowerModeTagText"
+                                               Text="日常均衡"
+                                               FontSize="11"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                        <TextBlock x:Name="PowerModeSubtitleText"
+                                   Text="P 核 2.8 GHz · E 核 2.2 GHz"
+                                   FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                </Grid>
+
+                <Grid Grid.Row="1"
+                      Margin="0,12,0,0"
+                      ColumnSpacing="6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Border x:Name="PowerModeStep0" Grid.Column="0" Height="4" CornerRadius="2" />
+                    <Border x:Name="PowerModeStep1" Grid.Column="1" Height="4" CornerRadius="2" />
+                    <Border x:Name="PowerModeStep2" Grid.Column="2" Height="4" CornerRadius="2" />
+                </Grid>
+            </Grid>
             </Grid>
         </Border>
     </Grid>

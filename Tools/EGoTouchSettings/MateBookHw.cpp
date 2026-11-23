@@ -4,6 +4,9 @@
 #include <windows.h>
 #include <sddl.h>
 #include <shlobj.h>
+#include <wbemidl.h>
+#include <oleauto.h>
+#include <atomic>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +23,8 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
+#pragma comment(lib, "wbemuuid.lib")
 
 namespace {
 
@@ -109,6 +114,82 @@ public:
             GetProcAddress(m_dll, "?GetFanSpeed@BiosWmi@HwSDK@@SAHAEAHW4FanSpeedLocateNumber@2@@Z"));
         m_getTemp = reinterpret_cast<ReadSensorFn>(
             GetProcAddress(m_dll, "?GetSensorTemperature@BiosWmi@HwSDK@@SAHAEAHW4QuerySensorTemperatureIndex@2@@Z"));
+        m_getTurbo = reinterpret_cast<GetBoolFn>(
+            GetProcAddress(m_dll, "?GetTurboMode@BiosWmi@HwSDK@@SAHAEA_N@Z"));
+        m_setTurbo = reinterpret_cast<SetBoolFn>(
+            GetProcAddress(m_dll, "?SetTurboMode@BiosWmi@HwSDK@@SAH_N@Z"));
+        m_getPerfMode = reinterpret_cast<GetIntFn>(
+            GetProcAddress(m_dll, "?GetPerformanceMode@BiosWmi@HwSDK@@SAHAEAW4PerformanceModeValue@2@@Z"));
+        m_setPerfMode = reinterpret_cast<SetIntFn>(
+            GetProcAddress(m_dll, "?SetPerformanceMode@BiosWmi@HwSDK@@SAHW4PerformanceModeValue@2@@Z"));
+    }
+
+    bool ReadTurboMode(bool& outEnabled) noexcept {
+        EnsureLoaded();
+        if (m_getTurbo) {
+            bool on = false;
+            if (m_getTurbo(on) == 0) {
+                outEnabled = on;
+                return true;
+            }
+        }
+        {
+            const uint8_t req[]{0x04, 0x0E};
+            uint8_t resp[8]{};
+            HRESULT hr = S_OK;
+            if (Gaokun::Power::Oem::Invoke(req, sizeof(req), resp, sizeof(resp), false, hr) ==
+                Gaokun::Power::Result::Ok && resp[0] == 0) {
+                outEnabled = (resp[1] == 1);
+                return true;
+            }
+        }
+        if (m_getPerfMode) {
+            int mode = -1;
+            if (m_getPerfMode(mode) == 0 && mode >= 0 && mode <= 2) {
+                outEnabled = (mode == 1);
+                return true;
+            }
+        }
+        {
+            const uint8_t req[]{0x04, 0x12};
+            uint8_t resp[8]{};
+            HRESULT hr = S_OK;
+            if (Gaokun::Power::Oem::Invoke(req, sizeof(req), resp, sizeof(resp), false, hr) ==
+                Gaokun::Power::Result::Ok && resp[0] == 0) {
+                outEnabled = (resp[1] == 1);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool WriteTurboMode(bool enable) noexcept {
+        EnsureLoaded();
+        if (m_setTurbo && m_setTurbo(enable) == 0) {
+            return true;
+        }
+        {
+            const uint8_t req[]{0x04, 0x0F, static_cast<uint8_t>(enable ? 1 : 0)};
+            uint8_t resp[8]{};
+            HRESULT hr = S_OK;
+            if (Gaokun::Power::Oem::Invoke(req, sizeof(req), resp, sizeof(resp), false, hr) ==
+                Gaokun::Power::Result::Ok && resp[0] == 0) {
+                return true;
+            }
+        }
+        if (m_setPerfMode && m_setPerfMode(enable ? 1 : 0) == 0) {
+            return true;
+        }
+        {
+            const uint8_t req[]{0x04, 0x13, static_cast<uint8_t>(enable ? 1 : 0)};
+            uint8_t resp[8]{};
+            HRESULT hr = S_OK;
+            if (Gaokun::Power::Oem::Invoke(req, sizeof(req), resp, sizeof(resp), false, hr) ==
+                Gaokun::Power::Result::Ok && resp[0] == 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool ReadFanRpm(int32_t& outRpm) noexcept {
@@ -173,11 +254,79 @@ public:
 
 private:
     using ReadSensorFn = int(__cdecl*)(int&, int);
+    using GetBoolFn = int(__cdecl*)(bool&);
+    using SetBoolFn = int(__cdecl*)(bool);
+    using GetIntFn = int(__cdecl*)(int&);
+    using SetIntFn = int(__cdecl*)(int);
     HMODULE m_dll = nullptr;
     ReadSensorFn m_getFan = nullptr;
     ReadSensorFn m_getTemp = nullptr;
+    GetBoolFn m_getTurbo = nullptr;
+    SetBoolFn m_setTurbo = nullptr;
+    GetIntFn m_getPerfMode = nullptr;
+    SetIntFn m_setPerfMode = nullptr;
     bool m_attempted = false;
     int m_tempSensorIndex = 0;
+};
+
+class OemWmiEventSink final : public IWbemObjectSink {
+public:
+    using Callback = void (*)(uint32_t eventCode, void* ctx) noexcept;
+
+    OemWmiEventSink(Callback cb, void* ctx) noexcept : m_cb(cb), m_ctx(ctx) {}
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return static_cast<ULONG>(m_refs.fetch_add(1, std::memory_order_relaxed) + 1);
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        const long next = m_refs.fetch_sub(1, std::memory_order_acq_rel) - 1;
+        if (next == 0) delete this;
+        return static_cast<ULONG>(next);
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+        if (!ppv) return E_POINTER;
+        if (riid == IID_IUnknown || riid == IID_IWbemObjectSink) {
+            *ppv = static_cast<IWbemObjectSink*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    HRESULT STDMETHODCALLTYPE Indicate(LONG lObjectCount, IWbemClassObject** apObjArray) override {
+        if (!m_cb || !apObjArray || lObjectCount <= 0) return WBEM_S_NO_ERROR;
+        for (LONG i = 0; i < lObjectCount; ++i) {
+            if (!apObjArray[i]) continue;
+            VARIANT vForce{};
+            VariantInit(&vForce);
+            if (SUCCEEDED(apObjArray[i]->Get(L"Force", 0, &vForce, nullptr, nullptr))) {
+                VARIANT vU4{};
+                VariantInit(&vU4);
+                if (SUCCEEDED(VariantChangeType(&vU4, &vForce, 0, VT_UI4))) {
+                    const uint32_t code = vU4.ulVal;
+                    if (code == 0x2A0u || code == 0x2A1u || code == 0x2A6u ||
+                        code == 0x2A7u || code == 0x2A8u) {
+                        m_cb(code, m_ctx);
+                    }
+                }
+                VariantClear(&vU4);
+            }
+            VariantClear(&vForce);
+        }
+        return WBEM_S_NO_ERROR;
+    }
+
+    HRESULT STDMETHODCALLTYPE SetStatus(LONG, HRESULT, BSTR, IWbemClassObject*) override {
+        return WBEM_S_NO_ERROR;
+    }
+
+private:
+    std::atomic<long> m_refs{1};
+    Callback m_cb = nullptr;
+    void* m_ctx = nullptr;
 };
 
 struct SecurityDescriptorHolder {
@@ -210,6 +359,7 @@ public:
         Stop();
         if (m_view) UnmapViewOfFile(m_view);
         if (m_mapping) CloseHandle(m_mapping);
+        if (m_fnPEvent) CloseHandle(m_fnPEvent);
         if (m_wakeEvent) CloseHandle(m_wakeEvent);
         if (m_stopEvent) CloseHandle(m_stopEvent);
         DeleteCriticalSection(&m_lock);
@@ -228,6 +378,12 @@ public:
             MapViewOfFile(m_mapping, FILE_MAP_WRITE, 0, 0, sizeof(SharedState)));
         if (!m_view) return false;
 
+        SecurityDescriptorHolder evSec;
+        if (evSec.Init(L"D:(A;;0x00120001;;;AU)(A;;GA;;;BA)(A;;GA;;;SY)")) {
+            const wchar_t* evName = m_serviceMode ? kGlobalFnPEventName : kLocalFnPEventName;
+            m_fnPEvent = CreateEventW(&evSec.sa, FALSE, FALSE, evName);
+        }
+
         ZeroMemory(m_view, sizeof(SharedState));
         m_view->magic = kMagic;
         m_view->version = kVersion;
@@ -237,6 +393,7 @@ public:
 
         // Take an initial reading on startup so data is immediately available.
         SampleChargeLocked();
+        SampleTurboLocked();
         SampleSensorsLocked();
         PublishSnapshotLocked();
 
@@ -246,6 +403,7 @@ public:
 
     void Run(HANDLE parentProcess = nullptr) noexcept {
         m_pipeThread = CreateThread(nullptr, 0, &PipeThreadEntry, this, 0, nullptr);
+        m_eventThread = CreateThread(nullptr, 0, &EventThreadEntry, this, 0, nullptr);
 
         HANDLE waits[3]{m_stopEvent, m_wakeEvent, parentProcess};
         const DWORD waitCount = parentProcess ? 3u : 2u;
@@ -275,6 +433,11 @@ public:
 
     void Stop() noexcept {
         SignalStop();
+        if (m_eventThread) {
+            WaitForSingleObject(m_eventThread, 3000);
+            CloseHandle(m_eventThread);
+            m_eventThread = nullptr;
+        }
         if (m_pipeThread) {
             WaitForSingleObject(m_pipeThread, 3000);
             CloseHandle(m_pipeThread);
@@ -283,6 +446,81 @@ public:
     }
 
 private:
+    static DWORD WINAPI EventThreadEntry(LPVOID param) noexcept {
+        static_cast<HwHost*>(param)->EventLoop();
+        return 0;
+    }
+
+    static void OnWmiFnPEvent(uint32_t code, void* ctx) noexcept {
+        if (auto* self = static_cast<HwHost*>(ctx)) {
+            self->OnFnPEvent(code);
+        }
+    }
+
+    void OnFnPEvent(uint32_t code) noexcept {
+        EnterCriticalSection(&m_lock);
+        const ULONGLONG now = GetTickCount64();
+        if (now >= m_suppressFnPUntilTick && (now - m_lastFnPTick) >= 300) {
+            m_lastFnPTick = now;
+            ++m_snapshot.fnPSeq;
+            m_snapshot.fnPEventCode = code;
+            PublishSnapshotLocked();
+            if (m_fnPEvent) SetEvent(m_fnPEvent);
+        }
+        LeaveCriticalSection(&m_lock);
+    }
+
+    void EventLoop() noexcept {
+        const HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        const bool comInit = SUCCEEDED(comHr);
+        if (comInit) {
+            (void)CoInitializeSecurity(
+                nullptr, -1, nullptr, nullptr,
+                RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE,
+                nullptr, EOAC_NONE, nullptr);
+        }
+
+        IWbemLocator* locator = nullptr;
+        IWbemServices* services = nullptr;
+        OemWmiEventSink* sink = nullptr;
+
+        if (SUCCEEDED(CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
+                                       IID_IWbemLocator, reinterpret_cast<void**>(&locator))) &&
+            locator) {
+            BSTR ns = SysAllocString(L"ROOT\\WMI");
+            if (ns) {
+                if (SUCCEEDED(locator->ConnectServer(ns, nullptr, nullptr, nullptr, 0, nullptr, nullptr, &services)) &&
+                    services) {
+                    (void)CoSetProxyBlanket(
+                        services, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
+                        RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE);
+                    sink = new (std::nothrow) OemWmiEventSink(&HwHost::OnWmiFnPEvent, this);
+                    if (sink) {
+                        BSTR lang = SysAllocString(L"WQL");
+                        BSTR query = SysAllocString(L"SELECT * FROM OemWMIEvent");
+                        if (lang && query) {
+                            if (SUCCEEDED(services->ExecNotificationQueryAsync(
+                                    lang, query, WBEM_FLAG_SEND_STATUS, nullptr, sink))) {
+                                WaitForSingleObject(m_stopEvent, INFINITE);
+                                (void)services->CancelAsyncCall(sink);
+                            }
+                        }
+                        if (lang) SysFreeString(lang);
+                        if (query) SysFreeString(query);
+                        sink->Release();
+                        sink = nullptr;
+                    }
+                    services->Release();
+                    services = nullptr;
+                }
+                SysFreeString(ns);
+            }
+            locator->Release();
+            locator = nullptr;
+        }
+
+        if (comInit) CoUninitialize();
+    }
     static DWORD WINAPI PipeThreadEntry(LPVOID param) noexcept {
         static_cast<HwHost*>(param)->PipeLoop();
         return 0;
@@ -404,6 +642,30 @@ private:
             }
             break;
         }
+        case CommandKind::SetTurboMode: {
+            const bool enable = (req.param != 0);
+            // Suppress self-triggered OemWMIEvent echoes (0x2A0/0x2A1) from EC/BIOS.
+            m_suppressFnPUntilTick = GetTickCount64() + 1000;
+            const bool wrote = m_sensors.WriteTurboMode(enable);
+            m_suppressFnPUntilTick = GetTickCount64() + 900;
+            if (wrote) {
+                (void)SampleTurboLocked();
+                m_snapshot.flags |= Flag::kHasTurbo;
+                if (enable) m_snapshot.flags |= Flag::kTurboActive;
+                else m_snapshot.flags &= ~Flag::kTurboActive;
+                PublishSnapshotLocked();
+                reply.ok = 1;
+            } else {
+                reply.ok = 0;
+                reply.errorCode = ERROR_GEN_FAILURE;
+            }
+            break;
+        }
+        case CommandKind::RefreshTurbo: {
+            reply.ok = SampleTurboLocked() ? 1u : 0u;
+            PublishSnapshotLocked();
+            break;
+        }
         default:
             reply.ok = 0;
             reply.errorCode = ERROR_INVALID_FUNCTION;
@@ -415,6 +677,20 @@ private:
 
         DWORD bytesWritten = 0;
         (void)WriteFile(pipe, &reply, sizeof(reply), &bytesWritten, nullptr);
+    }
+
+    bool SampleTurboLocked() noexcept {
+        bool enabled = false;
+        if (!m_sensors.ReadTurboMode(enabled)) {
+            return false;
+        }
+        m_snapshot.flags |= Flag::kHasTurbo;
+        if (enabled) {
+            m_snapshot.flags |= Flag::kTurboActive;
+        } else {
+            m_snapshot.flags &= ~Flag::kTurboActive;
+        }
+        return true;
     }
 
     bool SampleChargeLocked() noexcept {
@@ -468,6 +744,8 @@ private:
         m_view->chargeStopPercent = m_snapshot.chargeStopPercent;
         m_view->sampleTickMs = m_snapshot.sampleTickMs;
         m_view->hostPid = m_snapshot.hostPid;
+        m_view->fnPSeq = m_snapshot.fnPSeq;
+        m_view->fnPEventCode = m_snapshot.fnPEventCode;
         MemoryBarrier();
         InterlockedIncrement(&m_view->seq); // even
     }
@@ -476,12 +754,16 @@ private:
     CRITICAL_SECTION m_lock{};
     HANDLE m_stopEvent = nullptr;
     HANDLE m_wakeEvent = nullptr;
+    HANDLE m_fnPEvent = nullptr;
     HANDLE m_mapping = nullptr;
     HANDLE m_pipeThread = nullptr;
+    HANDLE m_eventThread = nullptr;
     SharedState* m_view = nullptr;
     VendorSensors m_sensors;
     Snapshot m_snapshot{};
     ULONGLONG m_activeUntilTick = 0;
+    ULONGLONG m_suppressFnPUntilTick = 0;
+    ULONGLONG m_lastFnPTick = 0;
 };
 
 SERVICE_STATUS_HANDLE g_statusHandle = nullptr;
@@ -661,11 +943,14 @@ int wmain(int argc, wchar_t** argv) {
         HRESULT hr = S_OK;
         const bool hasCharge =
             Gaokun::Power::Detail::ReadChargeThreshold(th, hr) == Gaokun::Power::Result::Ok;
+        bool turboOn = false;
+        const bool hasTurbo = sensors.ReadTurboMode(turboOn);
         wprintf(L"fan=%ls (%d RPM)\n", hasFan ? L"ok" : L"err", rpm);
         wprintf(L"cpu_temp=%ls (%d C)\n", hasTemp ? L"ok" : L"err", temp);
         wprintf(L"charge=%ls (mode=%u, %u%%..%u%%)\n", hasCharge ? L"ok" : L"err",
                 th.mode, th.startPercent, th.stopPercent);
-        return (hasFan || hasTemp || hasCharge) ? 0 : 1;
+        wprintf(L"turbo=%ls (%ls)\n", hasTurbo ? L"ok" : L"err", turboOn ? L"on" : L"off");
+        return (hasFan || hasTemp || hasCharge || hasTurbo) ? 0 : 1;
     }
     return 1;
 }

@@ -57,7 +57,7 @@ public:
             return L"已绑定频率上限：P 核 2.8 GHz · E 核 2.2 GHz（插电与电池通用，退出后自动恢复系统默认）。";
         case PowerOverlay::Mode::BestPerformance:
         default:
-            return L"当前不限频，交由系统与固件动态调度（退出后自动恢复系统默认）。";
+            return L"当前不限频，并自动联动华为高能模式（退出后自动恢复系统默认）。";
         }
     }
 

@@ -4,7 +4,7 @@
 
 运行安装包 `build/OpenEHubSetup-x64.msi`（可通过 `scripts/pack-msi-x64.ps1` 构建）即可完成标准安装、注册硬件服务并支持在 Windows「设置 → 应用」中一键完整卸载；也可直接双击 [opene-hub.cmd](opene-hub.cmd) 或 `build/settings-x64/openehub.exe` 运行。首次启动默认静默驻留任务栏托盘，左键托盘打开快捷控制面板，再次启动或右键菜单打开主窗口。
 
-软件运行期间会自动将 Windows 三种电源模式（插电与电池通用）双向绑定到分核频率上限：最佳能效（含节能模式）绑定 P 核 `2.0 GHz` / E 核 `1.5 GHz`，平衡绑定 P 核 `2.8 GHz` / E 核 `2.2 GHz`，最佳性能不限频；无论在系统设置还是 OpenE hub 内切档均实时联动，退出或卸载后自动解绑并还原 Windows 默认设置。
+软件运行期间会自动将 Windows 三种电源模式（插电与电池通用）双向绑定到分核频率上限：最佳能效（含节能模式）绑定 P 核 `2.0 GHz` / E 核 `1.5 GHz`，平衡绑定 P 核 `2.8 GHz` / E 核 `2.2 GHz`，最佳性能不限频并自动联动华为 BIOS/EC 高能模式；停用华为电脑管家服务后自动接管 `Fn + P` 快捷键实现三档循环切换与顶部 Fluent HUD 提示，无论在系统设置、快捷键还是 OpenE hub 内切档均实时联动，退出或卸载后自动解绑并还原系统默认设置。
 
 从源码构建需要 MSBuild、MSVC x64 编译工具、Windows SDK 10.0.26100、NuGet 以及（如需打 MSI 安装包）WiX Toolset v5。编译输出位于 `build/settings-x64`，安装包输出位于 `build/OpenEHubSetup-x64.msi`。配件页调用本机华为配件中心组件监测笔与磁吸键盘，屏幕页调用华为显示组件控制护眼、色温、自然色彩与色域，硬件服务 `OpenEHubHwService` 按需读取风扇转速、CPU 温度并同步充电保护，服务页可一键停用或恢复华为电脑管家后台服务。
 

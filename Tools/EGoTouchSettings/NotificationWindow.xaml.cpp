@@ -25,6 +25,8 @@ constexpr int kDeviationWidthDip = 336;
 constexpr int kDeviationHeightDip = 58;
 constexpr int kToolWidthDip = 200;
 constexpr int kToolHeightDip = 58;
+constexpr int kPowerModeWidthDip = 328;
+constexpr int kPowerModeHeightDip = 96;
 constexpr int kEnterMs = 180;
 constexpr int kSwapFadeOutMs = 120;
 constexpr int kSwapFadeInMs = 160;
@@ -203,7 +205,8 @@ void NotificationWindow::ConfigureWindow() {
 void NotificationWindow::SelectView(UIElement const& view) {
     for (const UIElement candidate :
          {ConnectionView().as<UIElement>(), KeyboardConnectionView().as<UIElement>(),
-          ToolView().as<UIElement>(), DeviationView().as<UIElement>()}) {
+          ToolView().as<UIElement>(), DeviationView().as<UIElement>(),
+          PowerModeView().as<UIElement>()}) {
         candidate.Visibility(candidate == view ? Visibility::Visible : Visibility::Collapsed);
     }
 }
@@ -578,6 +581,79 @@ void NotificationWindow::ShowToolChanged(bool eraser) {
     });
 }
 
+void NotificationWindow::ApplyPowerModeState(int tier, bool turboActive) {
+    tier = std::clamp(tier, 0, 2);
+    m_powerModeTier = tier;
+    m_powerModeTurbo = turboActive;
+
+    const bool dark = NotificationRoot().ActualTheme() == ElementTheme::Dark;
+    auto makeBrush = [](uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
+        return Microsoft::UI::Xaml::Media::SolidColorBrush(
+            Windows::UI::ColorHelper::FromArgb(a, r, g, b));
+    };
+
+    Microsoft::UI::Xaml::Media::SolidColorBrush accentBrush{nullptr};
+    Microsoft::UI::Xaml::Media::SolidColorBrush tintBrush{nullptr};
+    Microsoft::UI::Xaml::Media::SolidColorBrush borderBrush{nullptr};
+    if (tier == 0) {
+        accentBrush = dark ? makeBrush(255, 52, 211, 153) : makeBrush(255, 5, 150, 105);
+        tintBrush = dark ? makeBrush(42, 16, 185, 129) : makeBrush(28, 5, 150, 105);
+        borderBrush = dark ? makeBrush(92, 52, 211, 153) : makeBrush(72, 5, 150, 105);
+        PowerModeTitleText().Text(L"最佳能效");
+        PowerModeTagText().Text(L"静音续航");
+        PowerModeSubtitleText().Text(L"P 核 2.0 GHz · E 核 1.5 GHz");
+    } else if (tier == 1) {
+        accentBrush = dark ? makeBrush(255, 96, 165, 250) : makeBrush(255, 37, 99, 235);
+        tintBrush = dark ? makeBrush(42, 59, 130, 246) : makeBrush(28, 37, 99, 235);
+        borderBrush = dark ? makeBrush(92, 96, 165, 250) : makeBrush(72, 37, 99, 235);
+        PowerModeTitleText().Text(L"平衡模式");
+        PowerModeTagText().Text(L"日常均衡");
+        PowerModeSubtitleText().Text(L"P 核 2.8 GHz · E 核 2.2 GHz");
+    } else {
+        accentBrush = dark ? makeBrush(255, 251, 191, 36) : makeBrush(255, 217, 119, 6);
+        tintBrush = dark ? makeBrush(46, 245, 158, 11) : makeBrush(32, 217, 119, 6);
+        borderBrush = dark ? makeBrush(104, 251, 191, 36) : makeBrush(84, 217, 119, 6);
+        PowerModeTitleText().Text(L"最佳性能");
+        PowerModeTagText().Text(turboActive ? L"高能模式" : L"性能释放");
+        PowerModeSubtitleText().Text(
+            turboActive ? L"CPU 不限频 · 华为高能功耗释放" : L"CPU 不限频 · 系统动态调度");
+    }
+
+    PowerModeEcoIcon().Visibility(tier == 0 ? Visibility::Visible : Visibility::Collapsed);
+    PowerModeBalancedIcon().Visibility(tier == 1 ? Visibility::Visible : Visibility::Collapsed);
+    PowerModePerfIcon().Visibility(tier == 2 ? Visibility::Visible : Visibility::Collapsed);
+    PowerModeEcoIcon().Foreground(accentBrush);
+    PowerModeBalancedIcon().Foreground(accentBrush);
+    PowerModePerfIcon().Foreground(accentBrush);
+
+    PowerModeIconBadge().Background(tintBrush);
+    PowerModeIconBadge().BorderBrush(borderBrush);
+    PowerModeTagBorder().Background(tintBrush);
+    PowerModeTagBorder().BorderBrush(borderBrush);
+    PowerModeTagText().Foreground(accentBrush);
+    PowerModeTurboGlyph().Foreground(accentBrush);
+    PowerModeTurboGlyph().Visibility((tier == 2 && turboActive) ? Visibility::Visible : Visibility::Collapsed);
+
+    const auto inactiveBrush = dark ? makeBrush(42, 255, 255, 255) : makeBrush(30, 0, 0, 0);
+    PowerModeStep0().Background(tier == 0 ? accentBrush : inactiveBrush);
+    PowerModeStep1().Background(tier == 1 ? accentBrush : inactiveBrush);
+    PowerModeStep2().Background(tier == 2 ? accentBrush : inactiveBrush);
+}
+
+void NotificationWindow::ShowPowerMode(int tier, bool turboActive) {
+    if (m_shutdown) return;
+    ++m_showGeneration;
+    const HWND hwnd = WindowHandle();
+    if (m_presented && IsWindowVisible(hwnd) &&
+        PowerModeView().Visibility() == Visibility::Visible && !m_windowAnimRunning) {
+        ApplyPowerModeState(tier, turboActive);
+        RestartDwellTimer();
+        return;
+    }
+    PresentView(PowerModeView(), kPowerModeWidthDip, kPowerModeHeightDip,
+                [this, tier, turboActive] { ApplyPowerModeState(tier, turboActive); });
+}
+
 void NotificationWindow::ApplyTheme(ElementTheme theme) {
     NotificationRoot().RequestedTheme(theme);
 }
@@ -590,6 +666,9 @@ void NotificationWindow::SyncFrameTheme() {
     (void)DwmSetWindowAttribute(hwnd, kDwmwaUseImmersiveDarkMode, &immersive, sizeof(immersive));
     const COLORREF border = dark ? kBorderColorDark : kBorderColorLight;
     (void)DwmSetWindowAttribute(hwnd, kDwmwaBorderColor, &border, sizeof(border));
+    if (PowerModeView().Visibility() == Visibility::Visible) {
+        ApplyPowerModeState(m_powerModeTier, m_powerModeTurbo);
+    }
 }
 
 bool NotificationWindow::NeedsStateRefresh() const noexcept {
