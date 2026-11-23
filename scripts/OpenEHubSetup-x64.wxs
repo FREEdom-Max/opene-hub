@@ -1,0 +1,168 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <?ifndef StageDir ?>
+    <?define StageDir = "build\msi-stage-x64" ?>
+  <?endif ?>
+  <?ifndef RuntimeDir ?>
+    <?define RuntimeDir = "build\msi-stage-x64\runtime" ?>
+  <?endif ?>
+
+  <Package Name="!(loc.ProductName)"
+           Manufacturer="!(loc.Manufacturer)"
+           Version="$(var.BuildVersion)"
+           UpgradeCode="8E4A2C71-9F3B-4D1E-A6B2-5C8F1D0E4A23"
+           Scope="perMachine"
+           Language="!(loc.Language)">
+
+    <MajorUpgrade DowngradeErrorMessage="!(loc.DowngradeError)"
+                  AllowSameVersionUpgrades="yes" />
+
+    <Icon Id="OpenEHubIcon.ico" SourceFile="Tools\EGoTouchSettings\Assets\OpenEGoHub.ico" />
+    <Property Id="ARPPRODUCTICON" Value="OpenEHubIcon.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/FREEdom-Max/opene-hub" />
+
+    <ui:WixUI Id="WixUI_InstallDir" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="!(loc.LicenseRtf)" />
+
+    <Property Id="MsiLogging" Value="voicewarmup" />
+
+    <!-- 安装完成页默认勾选：以普通用户权限静默启动 OpenE hub 到托盘 -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.LaunchAppCheckbox)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#OpenEHubEXE]" />
+    <CustomAction Id="LaunchApp" DllEntry="WixShellExec" Impersonate="yes"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" />
+
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApp"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed" />
+    </UI>
+
+    <!--
+      卸载或升级前先通知运行中的 openehub.exe 优雅退出（解除频率绑定、停掉笔/键盘宿主、移除托盘图标），
+      避免「设置 → 应用」一键卸载时触发 FilesInUse 弹窗或留下未解绑的频率上限。
+      再配合 util:CloseApplication 兜底，防止便携版或卡死实例阻挡文件替换/删除。
+    -->
+    <CustomAction Id="QuitRunningApp"
+                  FileRef="OpenEHubEXE"
+                  ExeCommand="--quit"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="ignore" />
+
+    <util:CloseApplication Id="CloseOpenEHub" Target="openehub.exe"
+                           CloseMessage="no" TerminateProcess="1" RebootPrompt="no" />
+    <util:CloseApplication Id="ClosePenHost" Target="openehubPen.exe"
+                           CloseMessage="no" TerminateProcess="1" RebootPrompt="no" />
+    <util:CloseApplication Id="CloseKbdHost" Target="openehubKeyboard.exe"
+                           CloseMessage="no" TerminateProcess="1" RebootPrompt="no" />
+
+    <!-- 仅在真正卸载（非覆盖升级）时，以 SYSTEM 权限还原曾被禁用的华为后台服务 -->
+    <CustomAction Id="RestoreVendorServices"
+                  FileRef="OpenEHubServicesEXE"
+                  ExeCommand="restore"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="OpenEHub">
+        <Directory Id="SCRIPTSFOLDER" Name="scripts" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- 核心可执行文件、系统服务、开始菜单与开机静默自启 -->
+    <ComponentGroup Id="CoreComponents" Directory="INSTALLFOLDER">
+
+      <Component Id="OpenEHubAppComp" Guid="B7F1E4C2-38A9-4F0D-92E5-1A6C8B4D7E91">
+        <File Id="OpenEHubEXE" Source="$(var.StageDir)\openehub.exe" KeyPath="yes" />
+        <Shortcut Id="OpenEHubStartMenuShortcut"
+                  Directory="ProgramMenuFolder"
+                  Name="!(loc.ShortcutName)"
+                  Description="!(loc.ShortcutDescription)"
+                  Target="[INSTALLFOLDER]openehub.exe"
+                  Icon="OpenEHubIcon.ico"
+                  WorkingDirectory="INSTALLFOLDER" />
+      </Component>
+
+      <Component Id="OpenEHubHwComp" Guid="5D9C3B84-6E21-4A7F-8C12-9F4E2B7A3D65">
+        <File Id="OpenEHubHwEXE" Source="$(var.StageDir)\openehubHw.exe" KeyPath="yes" />
+        <ServiceInstall Id="OpenEHubHwServiceInstaller"
+                        Type="ownProcess"
+                        Name="OpenEHubHwService"
+                        DisplayName="!(loc.HwServiceDisplayName)"
+                        Description="!(loc.HwServiceDescription)"
+                        Arguments="--service"
+                        Start="auto"
+                        Account="LocalSystem"
+                        ErrorControl="normal">
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="none"
+                              RestartServiceDelayInSeconds="5"
+                              ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <ServiceControl Id="ControlOpenEHubHwService"
+                        Name="OpenEHubHwService"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
+      </Component>
+
+      <Component Id="OpenEHubHelpersComp" Guid="2A8E6F19-4C73-4D5B-B108-7E3A9C5D2F44">
+        <File Id="OpenEHubPenEXE" Source="$(var.StageDir)\openehubPen.exe" KeyPath="yes" />
+        <File Id="OpenEHubKeyboardEXE" Source="$(var.StageDir)\openehubKeyboard.exe" />
+        <File Id="OpenEHubServicesEXE" Source="$(var.StageDir)\openehubServices.exe" />
+      </Component>
+
+      <Component Id="OpenEHubAutoStartComp" Guid="9F3D7A52-1B64-4E8C-A931-6D2F8B4E1C70">
+        <RegistryValue Root="HKCU"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                       Name="openehub"
+                       Type="string"
+                       Value="&quot;[INSTALLFOLDER]openehub.exe&quot; --background"
+                       KeyPath="yes" />
+      </Component>
+
+      <Component Id="LegalNoticesComp" Guid="C41B8D63-7E92-4F3A-85D1-3B9A6E2C4F88">
+        <File Id="ProjectLicense" Source="LICENSE" KeyPath="yes" />
+        <File Id="ThirdPartyNotices" Source="THIRD-PARTY-NOTICES.md" />
+      </Component>
+
+    </ComponentGroup>
+
+    <ComponentGroup Id="ScriptComponents" Directory="SCRIPTSFOLDER">
+      <Component Id="GamutScriptComp" Guid="7E2F9A41-5D83-4C6B-9A14-8C3E5F2B7D19">
+        <File Id="SetGamutPS1" Source="$(var.StageDir)\scripts\Set-OpenEHubGamut.ps1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- 自包含 Windows App SDK 运行时、.xbf、.pri 与语言资源（由 pack-msi-x64.ps1 精简收割） -->
+    <ComponentGroup Id="RuntimeComponents" Directory="INSTALLFOLDER">
+      <Files Include="$(var.RuntimeDir)\**" />
+    </ComponentGroup>
+
+    <Feature Id="MainFeature" Title="OpenE hub" Level="1">
+      <ComponentGroupRef Id="CoreComponents" />
+      <ComponentGroupRef Id="ScriptComponents" />
+      <ComponentGroupRef Id="RuntimeComponents" />
+    </Feature>
+
+    <InstallExecuteSequence>
+      <!-- 已安装状态下（卸载/修复/维护），在 InstallValidate 前先优雅退出 openehub.exe -->
+      <Custom Action="QuitRunningApp" Before="InstallValidate" Condition="Installed" />
+      <!-- 真正卸载时（非升级），在删文件前先还原华为后台服务 -->
+      <Custom Action="RestoreVendorServices" Before="RemoveFiles"
+              Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
+  </Package>
+</Wix>

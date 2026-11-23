@@ -2,9 +2,11 @@
 
 A hardware control centre for the Intel x64 HUAWEI MateBook E 2023, based on [OpenEGo Hub](https://github.com/NihilDigit/openego-hub). The [read-only diagnostic script](scripts/Test-MateBookE.ps1) has been tested on the DRR-WXX and reads battery status, fan speed and temperature. [中文](README.md)
 
-Launch [opene-hub.cmd](opene-hub.cmd) to open the x64 openehub settings window. On the Battery page, Quiet disables boost, Daily allows boost with Best power efficiency, and Performance allows boost with Best performance. Restore uses the same backup as the earlier preview.
+Run the standard installer `build/OpenEHubSetup-x64.msi` (built with `scripts/pack-msi-x64.ps1`) to install the app, register the hardware service, and enable clean one-click uninstall from Windows Settings → Apps; alternatively launch [opene-hub.cmd](opene-hub.cmd) or `build/settings-x64/openehub.exe` directly. First launch starts silently in the system tray by default — left-click the tray icon for the quick flyout, or launch again / use the context menu to open the main window.
 
-The first launch from source builds the WinUI application using MSBuild, the MSVC x64 toolchain, Windows SDK 10.0.26100 and NuGet. The output lives in `build/settings-x64`. Launch openehub.exe directly. The Accessories page uses the installed Huawei accessory components. The Screen page controls Huawei Natural Color. The Services page reads Windows service state and saves the original configuration before disabling a service.
+While running, OpenE hub bidirectionally binds Windows' three Power Modes (on both AC and battery) to hybrid-core frequency ceilings: Best power efficiency (including Energy Saver) caps P-cores at `2.0 GHz` and E-cores at `1.5 GHz`, Balanced caps P-cores at `2.8 GHz` and E-cores at `2.2 GHz`, and Best performance leaves clocks unlimited. Changes made in either Windows Settings or OpenE hub apply immediately, and exiting or uninstalling automatically unbinds and restores the original Windows settings.
+
+Building from source requires MSBuild, the MSVC x64 toolchain, Windows SDK 10.0.26100, NuGet, and (for MSI packaging) WiX Toolset v5. Binaries are built to `build/settings-x64` and the MSI installer to `build/OpenEHubSetup-x64.msi`. The Accessories page uses the installed Huawei accessory components for stylus and magnetic keyboard telemetry, the Screen page controls eye comfort, colour temperature, natural colour, and gamut, `OpenEHubHwService` reads fan RPM / CPU temperature on demand and manages charge limits, and the Services page can disable or restore Huawei PC Manager background services.
 
 ## Upstream project documentation (MateBook E Go · ARM64)
 

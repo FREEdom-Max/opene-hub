@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="zh-CN" xmlns="http://wixtoolset.org/schemas/v4/wxl">
+
+  <String Id="Language" Value="2052" />
+  <String Id="ProductName" Value="OpenE hub" />
+  <String Id="Manufacturer" Value="OpenE hub" />
+  <String Id="DowngradeError" Value="已安装更高版本的 [ProductName]，安装无法继续。请先卸载现有版本后再试。" />
+  <String Id="LicenseRtf" Value="scripts\EULA_zh-CN.rtf" />
+
+  <String Id="ShortcutName" Value="OpenE hub" />
+  <String Id="ShortcutDescription" Value="静默启动 OpenE hub 托盘，或唤起主界面管理配件、显示、电源与风扇。" />
+
+  <String Id="HwServiceDisplayName" Value="OpenE hub 硬件服务" />
+  <String Id="HwServiceDescription" Value="OpenE hub 硬件服务 — 按需读取 MateBook E 风扇转速、CPU 温度并同步充电保护设置。随系统自动启动，空闲时零轮询。" />
+
+  <String Id="WelcomeDlgTitle" Value="{\WixUI_Font_Title}欢迎安装 [ProductName]" />
+  <String Id="WelcomeDlgDescription" Value="{\WixUI_Font_Normal}本向导将引导您完成 [ProductName]（MateBook E x64）的安装。&#xA;&#xA;安装程序将部署主程序、配件辅助进程与硬件服务（OpenEHubHwService），并配置开机静默驻留托盘。您随时可以通过 Windows「设置 → 应用」一键完整卸载。&#xA;&#xA;请单击&quot;下一步&quot;继续，或单击&quot;取消&quot;退出安装向导。" />
+
+  <String Id="LicenseAgreementDlgTitle" Value="{\WixUI_Font_Title}最终用户许可协议" />
+  <String Id="LicenseAgreementDlgDescription" Value="{\WixUI_Font_Normal}请仔细阅读以下许可协议。如您同意协议条款，请选择&quot;我接受许可协议条款&quot;后单击&quot;下一步&quot;继续安装。" />
+
+  <String Id="InstallDirDlgTitle" Value="{\WixUI_Font_Title}选择安装目录" />
+  <String Id="InstallDirDlgDescription" Value="{\WixUI_Font_Normal}请选择 [ProductName] 的安装路径。默认安装到以下目录，如需更改请单击&quot;浏览&quot;选择其他位置。&#xA;&#xA;建议使用默认路径以确保 Windows 服务管理器正常访问硬件服务。" />
+
+  <String Id="ProgressDlgTitleInstalling" Value="{\WixUI_Font_Title}正在安装 [ProductName]" />
+  <String Id="ProgressDlgTitleChanging" Value="{\WixUI_Font_Title}正在更改 [ProductName]" />
+  <String Id="ProgressDlgTitleRepairing" Value="{\WixUI_Font_Title}正在修复 [ProductName]" />
+  <String Id="ProgressDlgTitleRemoving" Value="{\WixUI_Font_Title}正在卸载 [ProductName]" />
+  <String Id="ProgressDlgTextInstalling" Value="请稍候，安装程序正在部署文件并注册硬件服务..." />
+  <String Id="ProgressDlgTextChanging" Value="请稍候，安装程序正在应用更改..." />
+  <String Id="ProgressDlgTextRepairing" Value="请稍候，安装程序正在修复损坏的组件..." />
+  <String Id="ProgressDlgTextRemoving" Value="请稍候，安装程序正在退出托盘、恢复系统配置并移除文件..." />
+
+  <String Id="ExitDlgTitle" Value="{\WixUI_Font_Title}[ProductName] 安装完成" />
+  <String Id="ExitDlgDescription" Value="{\WixUI_Font_Normal}安装程序已将 [ProductName] 成功安装到您的设备。&#xA;&#xA;硬件服务已自动启动。勾选下方选项后，单击&quot;完成&quot;即会在任务栏托盘静默运行 OpenE hub。&#xA;&#xA;单击&quot;完成&quot;退出安装向导。" />
+
+  <String Id="LaunchAppCheckbox" Value="静默启动 OpenE hub 到托盘" />
+
+  <String Id="UserExitTitle" Value="{\WixUI_Font_Title}[ProductName] 安装已取消" />
+  <String Id="UserExitDescription1" Value="{\WixUI_Font_Normal}安装向导已被中断。[ProductName] 未完成安装。&#xA;&#xA;您可以稍后重新运行本安装程序。" />
+  <String Id="FatalErrorTitle" Value="{\WixUI_Font_Title}[ProductName] 安装失败" />
+  <String Id="FatalErrorDescription1" Value="{\WixUI_Font_Normal}安装过程中发生错误，[ProductName] 未能安装。&#xA;&#xA;请检查您的管理员权限后重试。" />
+
+  <String Id="BrowseDlgTitle" Value="{\WixUI_Font_Title}浏览目标文件夹" />
+  <String Id="BrowseDlgDescription" Value="{\WixUI_Font_Normal}请选择一个安装目录，然后单击&quot;确定&quot;。" />
+  <String Id="PrepareDlgTitle" Value="{\WixUI_Font_Title}正在准备安装" />
+  <String Id="PrepareDlgDescription" Value="{\WixUI_Font_Normal}请稍候，安装程序正在计算空间占用并准备安装参数..." />
+  <String Id="MaintenanceWelcomeDlgTitle" Value="{\WixUI_Font_Title}[ProductName] 维护" />
+  <String Id="MaintenanceWelcomeDlgDescription" Value="{\WixUI_Font_Normal}请选择要对 [ProductName] 执行的操作：&#xA;    - 更改 - 添加或移除组件&#xA;    - 修复 - 重新安装所有已安装的程序文件&#xA;    - 卸载 - 从计算机中完整移除 [ProductName]" />
+  <String Id="ResumeDlgTitle" Value="{\WixUI_Font_Title}继续 [ProductName] 安装" />
+  <String Id="ResumeDlgDescription" Value="{\WixUI_Font_Normal}安装程序检测到上次安装未完成。请单击&quot;下一步&quot;继续，或单击&quot;取消&quot;中止。" />
+  <String Id="MaintenanceTypeDlgTitle" Value="{\WixUI_Font_Title}选择维护类型" />
+  <String Id="MaintenanceTypeDlgDescription" Value="{\WixUI_Font_Normal}选择要执行的操作类型，然后单击&quot;下一步&quot;继续。" />
+
+  <String Id="VerifyReadyDlgInstallTitle" Value="{\WixUI_Font_Title}准备安装 [ProductName]" />
+  <String Id="VerifyReadyDlgInstallText" Value="安装程序已准备就绪，将开始安装 [ProductName]。&#xA;&#xA;如需查看或更改安装设置，请单击&quot;上一步&quot;。单击&quot;安装&quot;以开始安装。&#xA;&#xA;安装目录：[INSTALLFOLDER]" />
+  <String Id="VerifyReadyDlgChangeTitle" Value="{\WixUI_Font_Title}准备更改 [ProductName]" />
+  <String Id="VerifyReadyDlgChangeText" Value="安装程序已准备就绪，将更改 [ProductName]。&#xA;&#xA;如需查看或更改设置，请单击&quot;上一步&quot;。单击&quot;更改&quot;以应用更改。" />
+  <String Id="VerifyReadyDlgRepairTitle" Value="{\WixUI_Font_Title}准备修复 [ProductName]" />
+  <String Id="VerifyReadyDlgRepairText" Value="安装程序已准备就绪，将修复 [ProductName]。&#xA;&#xA;单击&quot;修复&quot;以开始修复。" />
+  <String Id="VerifyReadyDlgRemoveTitle" Value="{\WixUI_Font_Title}准备卸载 [ProductName]" />
+  <String Id="VerifyReadyDlgRemoveText" Value="安装程序已准备就绪，将从您的设备卸载 [ProductName]。&#xA;&#xA;卸载将自动退出托盘、解除电源频率绑定、停止并移除硬件服务，并恢复曾禁用的华为后台服务。&#xA;&#xA;单击&quot;卸载&quot;以开始卸载。" />
+
+</WixLocalization>

@@ -11,8 +11,11 @@ $intermediate = Join-Path $root 'build\obj-settings-x64'
 & $msbuild $project /restore /nologo /verbosity:minimal /p:Platform=x64 /p:Configuration=Release "/p:OutDir=$output/" "/p:IntDir=$intermediate/" /p:WindowsAppSDKSelfContained=true
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 $helpers = Join-Path $root 'Tools\EGoTouchSettings\MateBookHelpers.vcxproj'
-foreach ($helper in 'Pen', 'Keyboard', 'Services', 'Fan') {
+foreach ($helper in 'Pen', 'Keyboard', 'Services', 'Hw') {
     & $msbuild $helpers /nologo /verbosity:minimal /p:Platform=x64 /p:Configuration=Release "/p:Helper=$helper" "/p:OutDir=$output/" "/p:IntDir=$intermediate/$helper/"
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
 }
+$outputScripts = Join-Path $output 'scripts'
+New-Item -ItemType Directory -Path $outputScripts -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $root 'scripts\Set-OpenEHubGamut.ps1') -Destination (Join-Path $outputScripts 'Set-OpenEHubGamut.ps1') -Force
 Get-Item -LiteralPath (Join-Path $output 'openehub.exe')
