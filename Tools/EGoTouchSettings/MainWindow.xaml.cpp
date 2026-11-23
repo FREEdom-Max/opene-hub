@@ -26,6 +26,7 @@
 #include <optional>
 #include <filesystem>
 #include <shellapi.h>
+#include <tlhelp32.h>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -48,6 +49,7 @@ constexpr UINT kMsgAccessoryChanged = WM_APP + 254;
 constexpr UINT kMsgPowerModeChanged = WM_APP + 255;
 constexpr UINT kMsgFnPHotkey = WM_APP + 256;
 constexpr UINT_PTR kTrayHoverTimerId = 0x4F45;
+constexpr UINT_PTR kOsdSuppressTimerId = 0x4F46;
 constexpr wchar_t kAccessoryChangedEventName[] = L"Local\\OpenEHubAccessoryChanged";
 constexpr GUID kGuidDevInterfaceHid = {
     0x4D1E55B2u, 0xF16Fu, 0x11CFu, {0x88u, 0xCBu, 0x00u, 0x11u, 0x11u, 0x00u, 0x00u, 0x30u}};
@@ -443,8 +445,10 @@ MainWindow::MainWindow() {
 #if defined(_M_X64) && !defined(_M_ARM64EC)
         if (const auto hwnd = WindowHandle()) {
             KillTimer(hwnd, kTrayHoverTimerId);
+            KillTimer(hwnd, kOsdSuppressTimerId);
         }
         m_trayHoverArmed = false;
+        StopHuaweiOsdSuppression();
         UnregisterFnPHotkeyWait();
         if (m_accessoryNotifyWait) {
             (void)UnregisterWaitEx(m_accessoryNotifyWait, INVALID_HANDLE_VALUE);
@@ -822,6 +826,90 @@ VOID CALLBACK MainWindow::OnFnPHotkeyCallback(PVOID parameter, BOOLEAN) {
     }
 }
 
+namespace {
+
+DWORD FindHuaweiOsdDaemonPid() noexcept {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    DWORD pid = 0;
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, L"OSD_Daemon.exe") == 0) {
+                pid = pe.th32ProcessID;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return pid;
+}
+
+void HideVisibleWindowsForPid(DWORD targetPid) noexcept {
+    if (!targetPid) return;
+    EnumWindows(
+        [](HWND hwnd, LPARAM lParam) -> BOOL {
+            const DWORD wantPid = static_cast<DWORD>(lParam);
+            DWORD pid = 0;
+            GetWindowThreadProcessId(hwnd, &pid);
+            if (pid == wantPid && IsWindowVisible(hwnd) && GetParent(hwnd) == nullptr) {
+                ShowWindow(hwnd, SW_HIDE);
+            }
+            return TRUE;
+        },
+        static_cast<LPARAM>(targetPid));
+}
+
+} // namespace
+
+VOID CALLBACK MainWindow::OnHuaweiOsdWinEvent(
+        HWINEVENTHOOK, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD, DWORD) {
+    if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF || !hwnd) return;
+    if (event == EVENT_OBJECT_SHOW || event == EVENT_OBJECT_LOCATIONCHANGE) {
+        if (IsWindowVisible(hwnd) && GetParent(hwnd) == nullptr) {
+            ShowWindow(hwnd, SW_HIDE);
+        }
+    }
+}
+
+void MainWindow::StopHuaweiOsdSuppression() {
+    if (m_osdWinEventHook) {
+        (void)UnhookWinEvent(m_osdWinEventHook);
+        m_osdWinEventHook = nullptr;
+    }
+    m_osdSuppressPid = 0;
+    if (const auto hwnd = WindowHandle()) {
+        KillTimer(hwnd, kOsdSuppressTimerId);
+    }
+}
+
+void MainWindow::SuppressHuaweiOsdTemporarily(DWORD durationMs) {
+    if (!m_matebookE || m_closed) return;
+    if (MateBookHw::Client::IsVendorPowerServiceRunning()) return;
+
+    const DWORD osdPid = FindHuaweiOsdDaemonPid();
+    if (!osdPid) return;
+
+    HideVisibleWindowsForPid(osdPid);
+
+    if (!m_osdWinEventHook || m_osdSuppressPid != osdPid) {
+        if (m_osdWinEventHook) {
+            (void)UnhookWinEvent(m_osdWinEventHook);
+            m_osdWinEventHook = nullptr;
+        }
+        m_osdSuppressPid = osdPid;
+        m_osdWinEventHook = SetWinEventHook(
+            EVENT_OBJECT_SHOW, EVENT_OBJECT_LOCATIONCHANGE,
+            nullptr, &MainWindow::OnHuaweiOsdWinEvent,
+            osdPid, 0, WINEVENT_OUTOFCONTEXT);
+    }
+
+    if (const auto hwnd = WindowHandle()) {
+        SetTimer(hwnd, kOsdSuppressTimerId, durationMs, nullptr);
+    }
+}
+
 void MainWindow::UnregisterFnPHotkeyWait() {
     if (m_fnPWait) {
         (void)UnregisterWaitEx(m_fnPWait, INVALID_HANDLE_VALUE);
@@ -896,6 +984,7 @@ fire_and_forget MainWindow::SyncHuaweiTurboModeAsync(bool enable, bool updateHud
     const uint64_t gen = ++m_turboSyncGen;
     m_lastSyncedTurboValid = true;
     m_lastSyncedTurbo = enable;
+    SuppressHuaweiOsdTemporarily(1800);
 
     apartment_context ui;
     MateBookHw::CommandReply reply{};
@@ -940,6 +1029,9 @@ void MainWindow::HandleFnPHotkey() {
     if (MateBookHw::Client::IsVendorPowerServiceRunning()) {
         return;
     }
+
+    // 临时抑制华为 OSD_Daemon 在本次 Fn+P 期间弹出的底部灰色方块，不影响音量/亮度等其他 OSD。
+    SuppressHuaweiOsdTemporarily(1800);
 
     const auto overlay = PowerOverlay::Query();
     PowerOverlay::Mode nextMode = PowerOverlay::Mode::Balanced;
@@ -1526,6 +1618,10 @@ LRESULT CALLBACK MainWindow::MainWndProc(
             });
         } catch (...) {
         }
+    }
+    if (self->m_matebookE && message == WM_TIMER && wParam == kOsdSuppressTimerId) {
+        self->StopHuaweiOsdSuppression();
+        return 0;
     }
     if (self->m_matebookE && message == WM_TIMER && wParam == kTrayHoverTimerId) {
         KillTimer(hwnd, kTrayHoverTimerId);

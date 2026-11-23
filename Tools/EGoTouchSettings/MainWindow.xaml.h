@@ -137,6 +137,11 @@ private:
     void InvalidateFlyoutHardwareCache() noexcept;
     static VOID CALLBACK OnAccessoryChangedCallback(PVOID parameter, BOOLEAN timerOrWaitFired);
     static VOID CALLBACK OnFnPHotkeyCallback(PVOID parameter, BOOLEAN timerOrWaitFired);
+    static VOID CALLBACK OnHuaweiOsdWinEvent(HWINEVENTHOOK hook, DWORD event, HWND hwnd,
+                                             LONG idObject, LONG idChild,
+                                             DWORD idEventThread, DWORD dwmsEventTime);
+    void SuppressHuaweiOsdTemporarily(DWORD durationMs);
+    void StopHuaweiOsdSuppression();
     void EnsureFnPHotkeyWaitRegistered();
     void UnregisterFnPHotkeyWait();
     void HandleFnPHotkey();
@@ -147,6 +152,8 @@ private:
     HANDLE m_accessoryNotifyWait = nullptr;
     HANDLE m_fnPEvent = nullptr;
     HANDLE m_fnPWait = nullptr;
+    HWINEVENTHOOK m_osdWinEventHook = nullptr;
+    DWORD m_osdSuppressPid = 0;
     uint32_t m_fnPHostPid = 0;
     uint32_t m_lastFnPSeq = 0;
     uint64_t m_turboSyncGen = 0;
