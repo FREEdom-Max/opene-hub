@@ -52,7 +52,7 @@ public:
         }
         switch (mode) {
         case PowerOverlay::Mode::BestEfficiency:
-            return L"已绑定频率上限：P 核 2.0 GHz · E 核 1.5 GHz（电池 EPP 60%，插电与电池通用，退出后自动恢复系统默认）。";
+            return L"已绑定频率上限：P 核 2.0 GHz · E 核 1.5 GHz（插电与电池通用，退出后自动恢复系统默认）。";
         case PowerOverlay::Mode::Balanced:
             return L"已绑定频率上限：P 核 2.8 GHz · E 核 2.2 GHz（插电与电池通用，退出后自动恢复系统默认）。";
         case PowerOverlay::Mode::BestPerformance:
@@ -157,8 +157,7 @@ public:
             return L"P=" + std::to_wstring(c.maxFreq1MHz) + L"MHz / E=" +
                    std::to_wstring(c.maxFreqMHz) + L"MHz (Boost=" + std::to_wstring(c.boostMode) + L")";
         };
-        return L"已绑定 | AC: " + fmtCaps(m_lastAcCaps) + L" | DC: " + fmtCaps(m_lastDcCaps) +
-               L" | 最佳能效 DC EPP=" + std::to_wstring(kBestEfficiencyDcEppTarget) + L"%";
+        return L"已绑定 | AC: " + fmtCaps(m_lastAcCaps) + L" | DC: " + fmtCaps(m_lastDcCaps);
     }
 
 private:
@@ -181,7 +180,6 @@ private:
         std::optional<DWORD> effDcEpp1;
     };
 
-    static inline constexpr DWORD kBestEfficiencyDcEppTarget = 60u;
     static inline constexpr GUID kProcessorSubgroup{
         0x54533251, 0x82be, 0x4824, {0x96, 0xc1, 0x47, 0xb6, 0x0b, 0x74, 0x0d, 0x00}};
     static inline constexpr GUID kBoostSetting{
@@ -437,13 +435,14 @@ private:
         if (const auto existing = LoadSessionBackupFile()) {
             if (PowerOverlay::detail::GuidEquals(existing->scheme, scheme)) {
                 m_backup = *existing;
-                if (!m_backup.effDcEpp || !m_backup.effDcEpp1) {
-                    DWORD e0 = 0, e1 = 0;
-                    if (ReadBestEfficiencyDcEpp(e0, e1)) {
-                        m_backup.effDcEpp = e0;
-                        m_backup.effDcEpp1 = e1;
-                        SaveSessionBackupFile(m_backup);
-                    }
+                // If upgrading from a previous build that overrode Best Efficiency DC EPP,
+                // restore that baseline immediately and drop the legacy EPP fields from the backup.
+                if (m_backup.effDcEpp && m_backup.effDcEpp1) {
+                    bool eppChanged = false;
+                    (void)WriteBestEfficiencyDcEppIfChanged(*m_backup.effDcEpp, *m_backup.effDcEpp1, eppChanged);
+                    m_backup.effDcEpp.reset();
+                    m_backup.effDcEpp1.reset();
+                    SaveSessionBackupFile(m_backup);
                 }
                 m_hasBackup = true;
                 return;
@@ -455,11 +454,6 @@ private:
         SessionBackup fresh{};
         fresh.scheme = scheme;
         if (ReadSideValues(scheme, true, fresh.ac) && ReadSideValues(scheme, false, fresh.dc)) {
-            DWORD e0 = 0, e1 = 0;
-            if (ReadBestEfficiencyDcEpp(e0, e1)) {
-                fresh.effDcEpp = e0;
-                fresh.effDcEpp1 = e1;
-            }
             m_backup = fresh;
             m_hasBackup = true;
             SaveSessionBackupFile(fresh);
@@ -545,19 +539,10 @@ private:
                                        dcCaps.maxThrottle, dcCaps.maxThrottle1};
 
             bool changed = false;
-            bool eppChanged = false;
             const bool okAc = WriteSideValuesIfChanged(scheme, true, acDesired, changed);
             const bool okDc = WriteSideValuesIfChanged(scheme, false, dcDesired, changed);
-            if (m_backup.effDcEpp && m_backup.effDcEpp1) {
-                (void)WriteBestEfficiencyDcEppIfChanged(
-                    kBestEfficiencyDcEppTarget, kBestEfficiencyDcEppTarget, eppChanged);
-            }
-            if ((changed || eppChanged) && api.setActiveScheme) {
+            if (changed && api.setActiveScheme) {
                 (void)api.setActiveScheme(nullptr, &scheme);
-            }
-            if (eppChanged && !acOnline && dcMode == PowerOverlay::Mode::BestEfficiency &&
-                !energySaver && api.setActive) {
-                (void)api.setActive(&PowerOverlay::detail::kBestEfficiencyGuid);
             }
             if (okAc && okDc) {
                 m_bound = true;
