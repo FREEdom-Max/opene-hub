@@ -1,147 +1,66 @@
-# OpenE hub
-
-面向华为 MateBook E 2023（Intel x64）的硬件控制台，派生自 [OpenEGo Hub](https://github.com/NihilDigit/openego-hub)。当前可用的[只读诊断脚本](scripts/Test-MateBookE.ps1)已在 DRR-WXX 上验证，可读取电池状态、风扇转速和温度。[English](README.en.md)
-
-运行安装包 `build/OpenEHubSetup-x64.msi`（可通过 `scripts/pack-msi-x64.ps1` 构建）即可完成标准安装、注册硬件服务并支持在 Windows「设置 → 应用」中一键完整卸载；也可直接双击 [opene-hub.cmd](opene-hub.cmd) 或 `build/settings-x64/openehub.exe` 运行。首次启动默认静默驻留任务栏托盘，左键托盘打开快捷控制面板，再次启动或右键菜单打开主窗口。
-
-软件运行期间会自动将 Windows 三种电源模式（插电与电池通用）双向绑定到分核频率上限：最佳能效（含节能模式）绑定 P 核 `2.0 GHz` / E 核 `1.5 GHz`，平衡绑定 P 核 `2.8 GHz` / E 核 `2.2 GHz`，最佳性能不限频并自动联动华为 BIOS/EC 高能模式；停用华为电脑管家服务后自动接管 `Fn + P` 快捷键实现三档循环切换与顶部 Fluent HUD 提示，无论在系统设置、快捷键还是 OpenE hub 内切档均实时联动，退出或卸载后自动解绑并还原系统默认设置。
-
-从源码构建需要 MSBuild、MSVC x64 编译工具、Windows SDK 10.0.26100、NuGet 以及（如需打 MSI 安装包）WiX Toolset v5。编译输出位于 `build/settings-x64`，安装包输出位于 `build/OpenEHubSetup-x64.msi`。配件页调用本机华为配件中心组件监测笔与磁吸键盘，屏幕页调用华为显示组件控制护眼、色温、自然色彩与色域，硬件服务 `OpenEHubHwService` 按需读取风扇转速、CPU 温度并同步充电保护，服务页可一键停用或恢复华为电脑管家后台服务。
-
-## 上游项目说明（MateBook E Go · ARM64）
-
 <p align="center">
-  <img src="Assets/brand/openego-hub-256.png" alt="OpenEGo Hub" width="88">
+  <img src="Assets/brand/openego-hub-256.png" alt="OpenE hub" width="88">
 </p>
 
-<h3 align="center">OpenEGo Hub</h3>
+<h1 align="center">OpenE hub</h1>
 
-<p align="center">HUAWEI MateBook E Go 硬件控制中心</p>
+<p align="center">面向 HUAWEI MateBook E 2023（Intel x64）的轻量级硬件控制中心</p>
 
 <p align="center">
-  <a href="https://github.com/NihilDigit/openego-hub/releases/latest"><img src="https://img.shields.io/github/v/release/NihilDigit/openego-hub?style=flat-square&display_name=tag&label=Release&labelColor=334155&color=317AF7" alt="Release"></a>
-  <a href="#硬件支持"><img src="https://img.shields.io/badge/Platform-Windows%2011%20ARM64-64748B?style=flat-square&labelColor=334155" alt="Platform"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/NihilDigit/openego-hub?style=flat-square&label=License&labelColor=334155&color=64748B" alt="License"></a>
+  <a href="#硬件支持"><img src="https://img.shields.io/badge/Platform-Windows%2011%20x64-317AF7?style=flat-square&labelColor=334155" alt="Platform"></a>
+  <a href="https://github.com/NihilDigit/openego-hub"><img src="https://img.shields.io/badge/Forked%20from-OpenEGo%20Hub-64748B?style=flat-square&labelColor=334155" alt="Forked from OpenEGo Hub"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/FREEdom-Max/opene-hub?style=flat-square&label=License&labelColor=334155&color=64748B" alt="License"></a>
 </p>
 
 <p align="center"><sub><strong>中文</strong> | <a href="README.en.md">English</a></sub></p>
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="Assets/screenshots/overview-dark.avif">
-    <source media="(prefers-color-scheme: light)" srcset="Assets/screenshots/overview-light.avif">
-    <img src="Assets/screenshots/overview-light.avif" alt="概览界面" width="820">
-  </picture>
-</p>
-
-OpenEGo Hub 以原生 ARM64 实现 MateBook E Go 的日常硬件管理，涵盖触控与手写笔、智能磁吸键盘、电池充电限制及屏幕显示设置。停用华为电脑管家的常驻 x64 服务后，上述硬件功能仍可正常使用。
+**OpenE hub** 派生自 [OpenEGo Hub](https://github.com/NihilDigit/openego-hub)（MateBook E Go · ARM64），专为 **HUAWEI MateBook E 2023（`DRR-WXX`，Intel x64）** 重新适配与扩展。在停用华为电脑管家常驻后台服务的前提下，提供电池与充电保护、Intel 大小核分核频限联动、`Fn + P` 高能模式接管与 Fluent HUD、风扇/温度按需监测、屏幕色彩与刷新率切换，以及手写笔和智能磁吸键盘状态管理。
 
 > [!IMPORTANT]
-> 系统中需保留原装华为驱动与华为电脑管家安装目录。触控、手写笔、键盘、充电限制与屏幕校色均需调用电脑管家附带的 DLL，卸载电脑管家会导致相应功能失效。电脑管家的后台服务与登录自启项可在「服务」页停用，无需常驻运行。
+> 系统中需保留原装华为驱动与华为电脑管家安装目录。屏幕校色、配件状态、充电保护与 BIOS/EC 传感器均需按需调用电脑管家附带的本地 DLL，彻底卸载电脑管家会导致对应功能不可用；电脑管家的常驻后台服务可在「服务」页一键停用，无需后台常驻。
 
 ---
 
 ## 主要功能
 
-- **概览与快捷面板**：汇总主机硬件信息、电源状态及手写笔、磁吸键盘电量；左键点击托盘图标弹出快捷控制面板，用于切换常用功能、电源模式与屏幕色温。
-- **触控与手写笔**：支持多点触控、书写防误触及 HUAWEI M-Pencil 压感与倾角检测；支持配置笔侧键双击动作（系统笔快捷方式或切换书写与橡皮擦），内置桌面版 OneNote 兼容模式。
-- **智能磁吸键盘**：显示吸附状态、充放电状态、电量与固件版本，控制键盘分离后的无线连接，并在手写笔或键盘接入时显示顶部状态提示。
-- **电池与电源**：集成 Windows 11 节能模式与电源模式设置，支持智能充电与六档充电上限（50%–100%），实时显示充放电功率、电压、容量、循环次数与电池健康度。
-- **屏幕与色彩**：切换内屏刷新率（120 Hz / 60 Hz）、出厂校准色域（原生 / sRGB / Display P3）、色温与护眼模式，内置色彩与灰阶对照条。
-- **服务管理**：支持停用或恢复华为电脑管家后台服务与登录自启项；运行期间接管触控，退出、卸载或异常终止时自动交还华为触控服务。
-- **更新与诊断**：支持定期检查更新并在应用内完成下载、SHA-256 校验与静默安装，支持打包导出运行日志。
-
----
-
-## 界面展示
-
-### 快捷面板与连接提示
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="Assets/screenshots/flyout-dark.avif">
-    <source media="(prefers-color-scheme: light)" srcset="Assets/screenshots/flyout-light.avif">
-    <img src="Assets/screenshots/flyout-light.avif" alt="快捷控制面板" width="340">
-  </picture>
-</p>
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="Assets/screenshots/popup-pen-dark.avif">
-    <source media="(prefers-color-scheme: light)" srcset="Assets/screenshots/popup-pen-light.avif">
-    <img src="Assets/screenshots/popup-pen-light.avif" alt="手写笔连接提示" width="340">
-  </picture>
-  &nbsp;&nbsp;
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="Assets/screenshots/popup-keyboard-dark.avif">
-    <source media="(prefers-color-scheme: light)" srcset="Assets/screenshots/popup-keyboard-light.avif">
-    <img src="Assets/screenshots/popup-keyboard-light.avif" alt="磁吸键盘连接提示" width="340">
-  </picture>
-</p>
-
-### 配件管理
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="Assets/screenshots/accessories-dark.avif">
-    <source media="(prefers-color-scheme: light)" srcset="Assets/screenshots/accessories-light.avif">
-    <img src="Assets/screenshots/accessories-light.avif" alt="配件管理界面" width="820">
-  </picture>
-</p>
-
-### 电池与屏幕
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="Assets/screenshots/battery-dark.avif">
-    <source media="(prefers-color-scheme: light)" srcset="Assets/screenshots/battery-light.avif">
-    <img src="Assets/screenshots/battery-light.avif" alt="电池设置界面" width="404">
-  </picture>
-  &nbsp;
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="Assets/screenshots/screen-dark.avif">
-    <source media="(prefers-color-scheme: light)" srcset="Assets/screenshots/screen-light.avif">
-    <img src="Assets/screenshots/screen-light.avif" alt="屏幕设置界面" width="404">
-  </picture>
-</p>
-
-### 服务与设备
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="Assets/screenshots/services-dark.avif">
-    <source media="(prefers-color-scheme: light)" srcset="Assets/screenshots/services-light.avif">
-    <img src="Assets/screenshots/services-light.avif" alt="服务管理界面" width="404">
-  </picture>
-  &nbsp;
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="Assets/screenshots/device-dark.avif">
-    <source media="(prefers-color-scheme: light)" srcset="Assets/screenshots/device-light.avif">
-    <img src="Assets/screenshots/device-light.avif" alt="设备信息界面" width="404">
-  </picture>
-</p>
+- **概览与零轮询托盘面板**：汇总主机硬件信息、实时充放电功率/电压/容量/循环次数与健康度，按需读取风扇转速与 CPU 温度，显示手写笔与磁吸键盘电量。首次启动默认静默驻留任务栏托盘，左键弹出快捷控制面板，再次启动或右键菜单打开主窗口。
+- **三档电源模式 × 分核频限 × 华为高能模式联动**：
+  - 运行期间自动将 Windows 三种电源模式（插电与电池通用）双向绑定到 Intel 混合架构频率上限：
+    - **最佳能效（含节能模式）**：P 核 `2.0 GHz` · E 核 `1.5 GHz`（保持 Windows 默认 EPP）
+    - **平衡**：P 核 `2.8 GHz` · E 核 `2.2 GHz`
+    - **最佳性能**：不限频，并自动联动开启华为 BIOS/EC **高能模式**
+  - 无论在 Windows 设置、托盘快捷面板、主窗口还是快捷键切档，均实时双向同步；退出、关机或卸载时自动还原系统默认频限并关闭高能模式。
+- **`Fn + P` 快捷键接管与 Fluent HUD**：
+  - 停用华为电脑管家服务后，`OpenEHubHwService` 通过零轮询 WMI `OemWMIEvent` 自动接管 `Fn + P` 快捷键，实现「最佳能效 → 平衡 → 最佳性能（高能模式）」三档循环切换。
+  - 切换时在屏幕顶部居中显示自适应明暗主题的 **Fluent 亚克力 HUD**，并在切档瞬间定向压制华为 `OSD_Daemon.exe` 重复弹窗，不影响音量、亮度、麦克风、Wi-Fi 等其他快捷键 OSD。
+- **电池与充电保护**：集成 Windows 11 节能模式与电源模式切换，通过独立本地硬件服务 `OpenEHubHwService` 按需同步华为智能充电与六档手动充电上限（50%–100%）。
+- **屏幕与色彩**：切换内屏刷新率（120 Hz / 60 Hz）、出厂校准色域（原生 / sRGB / Display P3）、自然色彩显示、色温与护眼模式。
+- **手写笔与智能磁吸键盘**：采用事件驱动与重叠 I/O（overlapped IPC）的独立宿主进程（`openehubPen.exe`、`openehubKeyboard.exe`），监测 HUAWEI M-Pencil 与分体式智能磁吸键盘的连接、吸附、充放电、电量及固件版本，支持控制键盘分离无线连接开关，并在接入时弹出顶部状态提示。
+- **服务管理**：一键停用或恢复华为电脑管家 6 项常驻业务服务（`MBAMainService`、`HwPCClientService`、`HiConnectivityService`、`HwDistributedMainService`、`MouseCrossingDaemon`、`WUCSProxy`），同时保留触控/笔与硬件快捷键底层服务（`HuaweiThpService`、`OSD_Daemon`）。卸载时自动恢复原状。
 
 ---
 
 ## 硬件支持
 
-- **主机**：HUAWEI MateBook E Go（Windows 11 ARM64）
-- **手写笔**：HUAWEI M-Pencil（支持 CD52、CD54、CD54R、CD54S，已在 CD54R 真机验证）
-- **键盘**：HUAWEI 智能磁吸键盘
+- **主机**：HUAWEI MateBook E 2023（`DRR-WXX`，Intel Core i5-1230U / i7-1260U，Windows 11 x64；已在 i5-1230U / BIOS 1.29 真机验证）
+- **键盘**：HUAWEI 智能磁吸键盘（RX0I 分体式）
+- **手写笔**：HUAWEI M-Pencil
+
+仓库内置的只读硬件诊断脚本 [scripts/Test-MateBookE.ps1](scripts/Test-MateBookE.ps1) 可在不改动系统设置的前提下验证本机电池、风扇转速与温度接口。
 
 ---
 
 ## 安装与使用
 
-1. 前往 [Releases](https://github.com/NihilDigit/openego-hub/releases/latest) 下载最新版 `OpenEGoHubSetup_arm64_vX.Y.Z.msi`。
-2. 运行安装程序（注册系统服务需管理员权限）。
-3. 安装完成后后台服务随系统启动，可通过任务栏托盘图标或开始菜单打开控制中心。
+### 方式一：MSI 标准安装（推荐）
 
-### 升级与卸载
+1. 使用 `scripts/pack-msi-x64.ps1` 构建或从 Releases 获取 `OpenEHubSetup-x64.msi`。
+2. 运行安装程序（注册硬件服务 `OpenEHubHwService` 需管理员权限）。
+3. 安装后通过开始菜单或任务栏托盘图标使用；可在 Windows「设置 → 应用」中一键完整卸载，卸载时自动移除硬件服务并还原此前停用的华为后台服务与系统电源设置。
 
-- 安装程序会自动替换旧版服务与程序文件，无需预先卸载；用户配置、日志及华为组件的停用状态均会保留。
-- 控制中心内确认更新后，后台服务自动完成下载、校验与静默安装，完成后重新拉起托盘与界面。
-- 卸载时触控自动交还华为触控服务，此前在控制中心停用的华为后台服务与登录自启项同步恢复。
+### 方式二：便携直接运行
+
+- 双击仓库根目录的 [opene-hub.cmd](opene-hub.cmd)（未编译时自动触发构建），或直接运行 `build/settings-x64/openehub.exe`。
 
 ---
 
@@ -149,56 +68,41 @@ OpenEGo Hub 以原生 ARM64 实现 MateBook E Go 的日常硬件管理，涵盖�
 
 ### 环境要求
 
-- Windows 11 ARM64
-- Visual Studio 2022（ARM64 与 ARM64EC MSVC 工具链、MSBuild）
-- CMake 3.20+ 与 Ninja
-- WiX Toolset v7（仅打包 MSI 安装包时需要）
+- Windows 11 x64
+- Visual Studio 2022（MSVC x64 工具链与 MSBuild）
+- Windows SDK `10.0.26100`
+- NuGet CLI
+- WiX Toolset v5（仅构建 MSI 安装包时需要）
 
 ### 编译与打包
 
-`hal/` 需先于主工程编译：
-
 ```powershell
-# 1. 编译 HAL（Debug 或 Release）
-.\hal\scripts\build.ps1 -Config Release
+# 1. 构建 x64 主程序、硬件服务与配件宿主（输出至 build\settings-x64）
+.\scripts\build-settings-x64.ps1
 
-# 2. 编译主工程（Debug 配置可附加 -Test 运行测试）
-.\scripts\build.ps1 -Config Release
-
-# 3. 打包 Release MSI（依次编译 HAL、主工程并生成 build\OpenEGoHubSetup.msi）
-scripts\pack_release_version.bat
-```
-
-本机部署与调试：
-
-```powershell
-# 将构建产物部署到 C:\Program Files\OpenEGoHub
-pwsh -File scripts\deploy.ps1 -Config Release
-
-# 注册 Debug 服务后迭代调试（需管理员权限）
-scripts\install_debug_service.bat
-pwsh -File scripts\dev-cycle.ps1
+# 2. 打包标准 MSI 安装程序（输出至 build\OpenEHubSetup-x64.msi）
+.\scripts\pack-msi-x64.ps1
 ```
 
 ---
 
 ## 项目结构
 
-- `EGoTouchService/`：原生 ARM64 系统服务，负责触控切换、配件状态同步与电源管理。
-- `hal/`：硬件抽象层，以及用于加载华为 x64 DLL 的 ARM64EC 辅助进程。
-- `Common/`：跨进程共享内存协议、配置定义与公共工具库。
-- `Tools/`：用户态组件，包含托盘程序（`EGoTouchTray`）、WinUI 3 控制中心（`EGoTouchSettings`）与安装清理工具（`EGoTouchCleanup`）。
-- `docs/`、`hal/docs/`：协议逆向记录、生命周期设计与底层模块分析文档。
-- `scripts/`：构建、测试、部署与 MSI 打包脚本。
+- `Tools/EGoTouchSettings/`：WinUI 3 主程序（`openehub.exe`）、托盘与 Fluent HUD、分核频限绑定器（`MateBookPowerFreqBinder.h`）、硬件服务（`MateBookHw.cpp` → `openehubHw.exe` / `OpenEHubHwService`）及事件驱动配件宿主（`openehubPen.exe`、`openehubKeyboard.exe`）。
+- `scripts/`：x64 构建脚本（`build-settings-x64.ps1`）、WiX MSI 打包脚本（`pack-msi-x64.ps1` / `OpenEHubSetup-x64.wxs`）与只读诊断脚本（`Test-MateBookE.ps1`）。
+- `Common/`：跨进程共享内存通道与公共定义。
+- `docs/`：键盘 MCU、手写笔与华为组件协议分析文档。
+- `EGoTouchService/`、`hal/`：继承自上游 OpenEGo Hub 的 ARM64 服务与硬件抽象层代码。
 
 ---
 
 ## 致谢
 
-本项目派生自 **[EGoTouchRev](https://github.com/awarson2233/EGoTouchRev)**（MIT License，© Detach2233），第三方组件与版权声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+本项目派生自 **[OpenEGo Hub](https://github.com/NihilDigit/openego-hub)**（面向 MateBook E Go ARM64，其本身派生自 **[EGoTouchRev](https://github.com/awarson2233/EGoTouchRev)**，MIT License，© Detach2233），完整第三方版权声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 
-开发过程中参考了以下开源项目与社区成果：
+开发与逆向过程中参考了以下社区项目：
 
+- [OpenEGo Hub](https://github.com/NihilDigit/openego-hub)（by NihilDigit）
 - [MateBook-E-Pen](https://github.com/eiyooooo/MateBook-E-Pen)（by eiyooooo）
 - [goodies](https://github.com/matebook-e-go/goodies)（by dantmnf）
 - [EgoTools](https://github.com/SaKongA/EgoTools)（by SaKongA）
@@ -214,6 +118,6 @@ pwsh -File scripts\dev-cycle.ps1
 
 ## 免责声明
 
-- **商标与产权**：本项目与 HUAWEI、Himax 及其他相关权利方无任何官方关联或授权。提及的产品名称、商标与公司名称均归各自权利人所有。
-- **第三方资产**：托盘程序与控制中心在运行时按需从本机已安装的华为电脑管家目录读取设备渲染图与状态图标，未检测到时自动回退至内置矢量或系统图标；受版权保护的原厂素材不包含在本仓库或安装包中。
-- **风险提示**：本项目涉及底层硬件驱动与系统服务交互，仅用于互操作性研究与技术交流。使用本软件产生的硬件故障、数据丢失或系统不稳定风险由用户自行承担，作者及贡献者不承担相关法律责任。
+- **商标与产权**：本项目与 HUAWEI 及其他相关权利方无任何官方关联或授权。提及的产品名称、商标与公司名称均归各自权利人所有。
+- **第三方资产**：程序在运行时按需从本机已安装的华为电脑管家目录读取设备渲染图与组件能力，未检测到时自动回退至内置图标；受版权保护的原厂素材不包含在本仓库或安装包中。
+- **风险提示**：本项目涉及底层硬件接口、WMI/EC 交互、电源策略与系统服务管理，仅用于互操作性研究与技术交流。使用本软件产生的硬件故障、数据丢失或系统不稳定风险由用户自行承担，作者及贡献者不承担相关法律责任。
