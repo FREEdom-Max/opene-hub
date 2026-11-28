@@ -63,7 +63,8 @@ $skipExact = @(
     'openehubPen.exe',
     'openehubKeyboard.exe',
     'openehubServices.exe',
-    'openehubFan.exe'
+    'openehubFan.exe',
+    'qdcmlib.dll'
 )
 Get-ChildItem -LiteralPath $binDir -File | ForEach-Object {
     if ($skipExtensions -contains $_.Extension.ToLowerInvariant()) { return }
