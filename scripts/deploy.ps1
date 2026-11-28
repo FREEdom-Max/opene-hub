@@ -134,10 +134,7 @@ foreach ($f in $appFiles) {
 # hal 的宿主与一次性组件。必须和服务同目录，见文件头的说明。
 $halFiles = @(
     'GaokunThpHost.exe', 'GaokunPenHost.exe', 'GaokunKeyboardHost.exe',
-    'GaokunDisplay.exe', 'GaokunPower.exe', 'GaokunCtl.exe',
-    # 色域组件必须带上它。System32 里的同名 DLL 在本机加载得上却拒绝初始化，
-    # 详见 gaokun-hal 的 src/display/Qdcm.cpp。
-    'qdcmlib.dll'
+    'GaokunDisplay.exe', 'GaokunPower.exe', 'GaokunCtl.exe'
 )
 foreach ($f in $halFiles) {
     $src = Join-Path $HalDir $f

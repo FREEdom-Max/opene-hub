@@ -185,16 +185,6 @@ if ($objs.Count -eq 0) { throw "controller build produced no objects." }
 if ($LASTEXITCODE -ne 0) { throw "controller archive failed." }
 Write-Host "[ok] $HostLib" -ForegroundColor Green
 
-# qdcmlib.dll 不参与编译，但必须落到输出目录：GaokunDisplay 从自己旁边加载它，而系统目录
-# 里那一份在本机会拒绝初始化（见 src/display/Qdcm.cpp）。deploy.ps1 和安装包都从这里取。
-$vendorDll = Join-Path $RepoRoot 'vendor\qdcmlib.dll'
-if (Test-Path $vendorDll) {
-    Copy-Item $vendorDll $OutDir -Force
-    Write-Host "[ok] $(Join-Path $OutDir 'qdcmlib.dll')" -ForegroundColor Green
-} else {
-    Write-Host "[!] vendor\qdcmlib.dll missing; colour gamut presets will not work." -ForegroundColor Yellow
-}
-
 if ($Verify) {
     function Get-PeInfo($path) {
         $bytes = [IO.File]::ReadAllBytes($path)

@@ -40,10 +40,8 @@ cd hal; .\scripts\build.ps1 -Config Debug            # then build the main tree
 Debug and Release each need their own HAL build — the static library carries the CRT
 choice, and a mismatch surfaces as LNK4098 at the service link step.
 
-`hal/vendor/qdcmlib.dll` is a committed vendor binary, not something the build produces.
-`hal/scripts/build.ps1` copies it into the output directory because `GaokunDisplay.exe`
-loads it from its own directory; the installer packs it from there. Its licence status is
-recorded in `THIRD-PARTY-NOTICES.md`.
+The legacy ARM64 gamut presets require a compatible `qdcmlib.dll` available to
+`GaokunDisplay.exe` at runtime. The vendor library is supplied separately.
 
 `cl.exe`, not clang. The settings window is built by MSBuild from a `.vcxproj` behind an
 `if(WIN32 AND MSVC)` gate, so a clang configuration silently produces no

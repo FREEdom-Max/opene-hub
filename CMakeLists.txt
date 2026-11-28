@@ -473,27 +473,20 @@ if(TARGET EGoTouchSettings)
     add_dependencies(EGoTouchTray EGoTouchSettings)
 endif()
 
-# 色温与护眼命令由用户会话里的托盘执行，GaokunDisplay 因而必须和托盘在同一目录；
-# qdcmlib 也必须紧挨 GaokunDisplay，不能误加载 System32 里的不兼容版本。安装脚本已有同样
-# 的布局，这里补齐直接从 build 目录运行的 Debug/Release 开发链路。
+# 色温与护眼命令由用户会话里的托盘执行，GaokunDisplay 因而必须和托盘在同一目录。
 set(GAOKUN_DISPLAY_EXE
     "${GAOKUN_HAL_ROOT}/build/${GAOKUN_HAL_CONFIG}/GaokunDisplay.exe")
-set(GAOKUN_QDCM_DLL
-    "${GAOKUN_HAL_ROOT}/build/${GAOKUN_HAL_CONFIG}/qdcmlib.dll")
 set(EGO_DISPLAY_RUNTIME_EXE "${CMAKE_CURRENT_BINARY_DIR}/GaokunDisplay.exe")
-set(EGO_DISPLAY_RUNTIME_DLL "${CMAKE_CURRENT_BINARY_DIR}/qdcmlib.dll")
 add_custom_command(
-    OUTPUT "${EGO_DISPLAY_RUNTIME_EXE}" "${EGO_DISPLAY_RUNTIME_DLL}"
+    OUTPUT "${EGO_DISPLAY_RUNTIME_EXE}"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${GAOKUN_DISPLAY_EXE}" "${EGO_DISPLAY_RUNTIME_EXE}"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${GAOKUN_QDCM_DLL}" "${EGO_DISPLAY_RUNTIME_DLL}"
-    DEPENDS "${GAOKUN_DISPLAY_EXE}" "${GAOKUN_QDCM_DLL}"
+    DEPENDS "${GAOKUN_DISPLAY_EXE}"
     COMMENT "Copying Gaokun display runtime beside OpenEGoHubTray"
     VERBATIM
 )
 add_custom_target(EGoTouchDisplayRuntime ALL
-    DEPENDS "${EGO_DISPLAY_RUNTIME_EXE}" "${EGO_DISPLAY_RUNTIME_DLL}")
+    DEPENDS "${EGO_DISPLAY_RUNTIME_EXE}")
 add_dependencies(EGoTouchTray EGoTouchDisplayRuntime)
 
 # 面向用户的可执行文件名随产品走，CMake target 名保持不变：target 名只出现在构建脚本、

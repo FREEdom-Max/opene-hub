@@ -35,7 +35,7 @@ OpenEGo Hub implements day-to-day hardware management for the MateBook E Go nati
 - **Touch & HUAWEI M-Pencil.** Multi-touch and palm rejection while writing, with pressure and tilt output, configurable side-button double-tap actions (system pen shortcut or writing/eraser toggle), and built-in desktop OneNote compatibility.
 - **Smart magnetic keyboard.** Live attach state, charging state, battery percentage, and firmware version, wireless-on-detach control, and top-centre prompts when the pen or keyboard connects.
 - **Battery & power.** Integrates Windows 11 Energy Saver and Power Mode alongside vendor smart charging and six manual charge limits (50%–100%), with live wattage, voltage, capacity, cycle count, and battery health readouts.
-- **Display & colour.** Switch internal panel refresh rate (120 Hz / 60 Hz), factory-calibrated colour gamuts (Native, sRGB, Display P3), colour temperature, and eye comfort mode with a built-in colour and grayscale reference strip.
+- **Display & colour.** Switch the internal display between 120 Hz and 60 Hz, adjust colour temperature and Eye Comfort, and use the built-in colour and grayscale reference strip. Factory-calibrated gamut presets (Native, sRGB, Display P3) require a separately supplied compatible `qdcmlib.dll`.
 - **Service management.** Disable or restore Huawei PC Manager's background services and startup entries in one click. OpenEGo Hub takes over touch while running and hands it back to Huawei's touch service automatically on exit, uninstall, or crash.
 - **Updates & diagnostics.** Periodic background release checks with in-app download, SHA-256 verification, and silent installation, plus one-click diagnostic log export.
 

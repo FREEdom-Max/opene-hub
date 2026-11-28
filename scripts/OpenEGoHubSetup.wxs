@@ -293,18 +293,6 @@
       <Component Id="GaokunPowerComp" Guid="DAA69D51-7D99-4D95-AF57-93FE7830AFF9">
         <File Id="GaokunPowerEXE" Source="$(var.HalOutputDir)\GaokunPower.exe" KeyPath="yes" />
       </Component>
-
-      <!--
-        色域组件。System32 里的同名 DLL 在本机加载得上、符号也解析得到，工厂函数却返回
-        null，所以 GaokunDisplay 需要旁边这一份，见 hal/src/display/Qdcm.cpp。
-
-        源取 hal 的输出目录而不是 hal/vendor：hal 的 build.ps1 会把它复制过去，与其余五个
-        宿主同源，打包时只认一个目录。
-      -->
-      <Component Id="QdcmLibComp" Guid="885FD01E-D58A-405C-9AFE-2C0688FDAAFD">
-        <File Id="QdcmLibDLL" Source="$(var.HalOutputDir)\qdcmlib.dll" KeyPath="yes" />
-      </Component>
-
     </ComponentGroup>
 
     <Feature Id="MainFeature" Title="EGoTouch Core" Level="1">
